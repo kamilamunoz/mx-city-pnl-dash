@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Habi MX · P&L por Ciudad</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" href="assets/tuhabi.png">
+<link rel="stylesheet" href="css/styles.css?v=2026-07-21-v5-tabs">
+</head>
+<body>
+
+<!-- ============================================================ LOGIN GATE -->
+<div id="loginGate" class="login-gate">
+  <div class="login-card">
+    <img class="login-logo" src="assets/tuhabi.png" alt="tu habi">
+    <div class="login-eyebrow">MX · P&L POR CIUDAD</div>
+    <h2>Acceso restringido</h2>
+    <p class="login-sub">Ingresa la contraseña para continuar.</p>
+    <form id="loginForm" autocomplete="off">
+      <input type="password" id="loginPwd" placeholder="Password" autocomplete="off" autofocus required>
+      <button type="submit">Entrar</button>
+    </form>
+    <div id="loginError" class="login-error" hidden>Contraseña incorrecta.</div>
+    <div class="login-foot">Uso interno · Finanzas Habi</div>
+  </div>
+</div>
+
+<!-- ============================================================ HEADER ==== -->
+<header class="topbar" hidden>
+  <div class="topbar-inner">
+    <div class="brand">
+      <img class="logo-img" src="assets/tuhabi.png" alt="tu habi">
+      <div>
+        <div class="eyebrow">MX · MARKET MAKER</div>
+        <h1>P&L por Ciudad</h1>
+        <div class="sub" id="contextLabel">Cargando…</div>
+      </div>
+    </div>
+    <div class="asof">
+      <div class="ttl">DATA</div>
+      <div class="row"><span class="k">Rango</span><b id="rangoFechas">—</b></div>
+      <div class="row"><span class="k">Refresh</span><b id="refreshAt">—</b></div>
+      <div class="row"><span class="k">Currency</span><b>MXN 000's</b></div>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================ TABS ====== -->
+<nav class="tabs" hidden>
+  <div class="tabs-inner">
+    <button class="tab-btn active" data-tab="pnl">P&L por región</button>
+    <button class="tab-btn" data-tab="comparativa">Comparativa entre regiones</button>
+  </div>
+</nav>
+
+<!-- ============================================================ TAB PNL === -->
+<section id="tab-pnl" class="tab-panel" hidden>
+
+  <!-- controls -->
+  <div class="controls">
+    <div class="control-group">
+      <label>Vista</label>
+      <div class="segmented" id="vistaCtrl">
+        <button class="seg-btn active" data-vista="acc">ACC (Accounting)</button>
+        <button class="seg-btn" data-vista="sintetico">Sintético (UE con fallback ACC)</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <label>Región</label>
+      <div class="segmented wrap" id="regionCtrl"></div>
+    </div>
+    <div class="control-group">
+      <label>Meses a mostrar</label>
+      <div class="segmented" id="rangoCtrl">
+        <button class="seg-btn" data-rango="6">Últimos 6</button>
+        <button class="seg-btn active" data-rango="12">Últimos 12</button>
+        <button class="seg-btn" data-rango="all">Todos</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- tabla -->
+  <main class="tabla-wrap">
+    <div class="tabla-scroll">
+      <table id="pnlTable">
+        <thead><tr id="pnlHead"></tr></thead>
+        <tbody id="pnlBody"></tbody>
+      </table>
+    </div>
+    <p class="footnote">
+      Valores en <b>miles de MXN</b>. Cohorte: <code>fecha_facturacion_venta</code> (mes de escritura).
+      Click en una celda para ver el detalle de NIDs.<br>
+      Fuente: <code>clients-domain-data-master.finance_wh_bi.finance_apartment_tracker_mx</code>.<br>
+      <span id="pendienteNota"></span>
+    </p>
+  </main>
+</section>
+
+<!-- ============================================================ TAB COMP == -->
+<section id="tab-comparativa" class="tab-panel" hidden>
+
+  <div class="controls">
+    <div class="control-group">
+      <label>Vista</label>
+      <div class="segmented" id="cmpVistaCtrl">
+        <button class="seg-btn active" data-vista="acc">ACC</button>
+        <button class="seg-btn" data-vista="sintetico">Sintético</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <label>Período</label>
+      <div class="segmented" id="cmpPeriodoCtrl">
+        <button class="seg-btn active" data-periodo="3m">Últimos 3 meses</button>
+        <button class="seg-btn" data-periodo="q">Último Q completo</button>
+        <button class="seg-btn" data-periodo="6m">Últimos 6 meses</button>
+        <button class="seg-btn" data-periodo="12m">Últimos 12 meses</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <label>Regiones a comparar</label>
+      <div class="segmented wrap" id="cmpRegionCtrl"></div>
+    </div>
+    <div class="control-group">
+      <label>Métrica</label>
+      <div class="segmented" id="cmpMetricaCtrl">
+        <button class="seg-btn active" data-metrica="abs">Absoluto</button>
+        <button class="seg-btn" data-metrica="pct">% del Revenue</button>
+        <button class="seg-btn" data-metrica="per_nid">Por NID</button>
+      </div>
+    </div>
+  </div>
+
+  <main class="tabla-wrap">
+    <div class="cmp-context" id="cmpContext"></div>
+    <div class="tabla-scroll">
+      <table id="cmpTable">
+        <thead><tr id="cmpHead"></tr></thead>
+        <tbody id="cmpBody"></tbody>
+      </table>
+    </div>
+    <p class="footnote">
+      Valores agregados sobre el período seleccionado. La columna <b>Total</b> suma todas las regiones (no solo las seleccionadas).
+      Toggle "% del Revenue" para normalizar (base = GMV sin HC100 de la región).
+      Toggle "Por NID" para dividir cada valor entre el # de NIDs facturados en la región.
+    </p>
+  </main>
+</section>
+
+<!-- ============================================================ DRILL PANEL -->
+<div id="drillOverlay" class="drill-overlay" hidden></div>
+<aside id="drillPanel" class="drill-panel" hidden>
+  <header class="drill-head">
+    <div>
+      <div class="drill-eyebrow" id="drillContext"></div>
+      <h3 id="drillTitle">—</h3>
+      <div class="drill-total" id="drillTotal"></div>
+    </div>
+    <button class="drill-close" id="drillClose" aria-label="Cerrar">×</button>
+  </header>
+  <div class="drill-body">
+    <div class="drill-summary" id="drillSummary"></div>
+    <table class="drill-table">
+      <thead>
+        <tr>
+          <th style="text-align:left">#</th>
+          <th style="text-align:left">NID</th>
+          <th style="text-align:right">Valor (MXN)</th>
+          <th style="text-align:right">% del total</th>
+          <th style="text-align:center">⚑</th>
+        </tr>
+      </thead>
+      <tbody id="drillTbody"></tbody>
+    </table>
+  </div>
+</aside>
+
+<script src="js/app.js?v=2026-07-21-v5-tabs"></script>
+</body>
+</html>

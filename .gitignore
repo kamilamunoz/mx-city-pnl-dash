@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.DS_Store
+
+# raw data local (parquet) — no lo subimos al repo
+data/*.parquet
+data/*.csv
+
+# credenciales
+.env
+*.pem
+*.key
+
+# editor
+.vscode/
+.idea/
