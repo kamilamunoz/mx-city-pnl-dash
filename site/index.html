@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="icon" type="image/png" href="assets/tuhabi.png">
-<link rel="stylesheet" href="css/styles.css?v=2026-07-21-v5-tabs">
+<link rel="stylesheet" href="css/styles.css?v=2026-07-22-v9-report">
 </head>
 <body>
 
@@ -60,24 +60,50 @@
 <section id="tab-pnl" class="tab-panel" hidden>
 
   <!-- controls -->
-  <div class="controls">
-    <div class="control-group">
-      <label>Vista</label>
-      <div class="segmented" id="vistaCtrl">
-        <button class="seg-btn active" data-vista="acc">ACC (Accounting)</button>
-        <button class="seg-btn" data-vista="sintetico">Sintético (UE con fallback ACC)</button>
+  <div class="controls two-col">
+    <div class="controls-left">
+      <div class="control-group">
+        <label>Vista</label>
+        <div class="segmented" id="vistaCtrl">
+          <button class="seg-btn active" data-vista="acc">ACC (Accounting)</button>
+          <button class="seg-btn" data-vista="sintetico">Sintético (UE con fallback ACC)</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <label>Región</label>
+        <div class="segmented wrap" id="regionCtrl"></div>
       </div>
     </div>
-    <div class="control-group">
-      <label>Región</label>
-      <div class="segmented wrap" id="regionCtrl"></div>
-    </div>
-    <div class="control-group">
-      <label>Meses a mostrar</label>
-      <div class="segmented" id="rangoCtrl">
-        <button class="seg-btn" data-rango="6">Últimos 6</button>
-        <button class="seg-btn active" data-rango="12">Últimos 12</button>
-        <button class="seg-btn" data-rango="all">Todos</button>
+
+    <div class="controls-right">
+      <div class="control-group">
+        <label>Meses a mostrar</label>
+        <div class="segmented" id="rangoCtrl">
+          <button class="seg-btn" data-rango="6">Últimos 6</button>
+          <button class="seg-btn active" data-rango="12">Últimos 12</button>
+          <button class="seg-btn" data-rango="all">Todos</button>
+          <button class="seg-btn" data-rango="year">Por año</button>
+          <button class="seg-btn" data-rango="range">Rango</button>
+        </div>
+
+        <!-- sub-control: año -->
+        <div class="sub-control" id="yearSubCtrl" hidden>
+          <div class="segmented" id="yearCtrl"></div>
+        </div>
+
+        <!-- sub-control: rango de fechas -->
+        <div class="sub-control" id="rangeSubCtrl" hidden>
+          <div class="range-inputs">
+            <div>
+              <span class="range-lbl">Desde</span>
+              <select id="rangeFrom"></select>
+            </div>
+            <div>
+              <span class="range-lbl">Hasta</span>
+              <select id="rangeTo"></select>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -135,6 +161,10 @@
 
   <main class="tabla-wrap">
     <div class="cmp-context" id="cmpContext"></div>
+
+    <!-- insights -->
+    <div class="insights" id="cmpInsights"></div>
+
     <div class="tabla-scroll">
       <table id="cmpTable">
         <thead><tr id="cmpHead"></tr></thead>
@@ -142,9 +172,10 @@
       </table>
     </div>
     <p class="footnote">
-      Valores agregados sobre el período seleccionado. La columna <b>Total</b> suma todas las regiones (no solo las seleccionadas).
-      Toggle "% del Revenue" para normalizar (base = GMV sin HC100 de la región).
-      Toggle "Por NID" para dividir cada valor entre el # de NIDs facturados en la región.
+      Solo se muestran conceptos "grandes" (KPIs, rubros y totales). Para ver el detalle de una línea, click en la celda.
+      La columna <b>Total</b> suma todas las regiones (no solo las seleccionadas).
+      Toggle <b>% del Revenue</b> para normalizar (base = GMV sin HC100 de la región).
+      Toggle <b>Por NID</b> para dividir cada valor entre el # de NIDs facturados.
     </p>
   </main>
 </section>
@@ -162,6 +193,13 @@
   </header>
   <div class="drill-body">
     <div class="drill-summary" id="drillSummary"></div>
+
+    <!-- reportar a Jeff -->
+    <div class="drill-actions" id="drillActions" hidden>
+      <button class="btn-report" id="reportBtn">🚩 Reportar NIDs marcados a Jeff</button>
+      <span class="drill-actions-note" id="reportNote"></span>
+    </div>
+
     <table class="drill-table">
       <thead>
         <tr>
@@ -177,6 +215,6 @@
   </div>
 </aside>
 
-<script src="js/app.js?v=2026-07-21-v5-tabs"></script>
+<script src="js/app.js?v=2026-07-22-v10-webhook"></script>
 </body>
 </html>

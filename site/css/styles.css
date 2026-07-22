@@ -148,7 +148,44 @@ code, .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
   display: flex; gap: 32px; flex-wrap: wrap;
   max-width: 1600px; margin: 0 auto;
 }
+.controls.two-col {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.controls-left {
+  display: flex; flex-direction: column; gap: 14px;
+  min-width: 320px;
+}
+.controls-right {
+  display: flex; flex-direction: column; gap: 14px;
+  min-width: 320px;
+}
 .control-group { display: flex; flex-direction: column; gap: 8px; }
+.sub-control { margin-top: 8px; }
+.sub-control[hidden] { display: none !important; }
+.range-inputs {
+  display: flex; gap: 12px; align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+.range-inputs > div { display: flex; flex-direction: column; gap: 4px; }
+.range-lbl {
+  color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  font-weight: 600;
+}
+.range-inputs select {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 6px;
+  outline: none;
+}
+.range-inputs select:focus { border-color: var(--habi); }
 .control-group label {
   color: var(--habi); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
   font-weight: 600;
@@ -272,6 +309,87 @@ tbody tr td .pct { color: var(--muted); font-size: 10.5px; font-weight: 400; dis
 }
 .footnote code { color: var(--habi); background: var(--habi-soft); padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; }
 .footnote b { color: var(--text-strong); }
+
+/* ─── comparativa: insights ─── */
+.insights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 4px 0 20px;
+}
+.insight-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.insight-card:hover {
+  border-color: var(--habi);
+  box-shadow: 0 4px 16px rgba(123, 44, 255, 0.08);
+}
+.insight-card::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--habi);
+  border-radius: 3px 0 0 3px;
+}
+.insight-card.good::before { background: var(--income); }
+.insight-card.bad::before { background: var(--cost); }
+.insight-card.neutral::before { background: var(--habi); }
+
+.insight-title {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.insight-headline {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+.insight-headline .region {
+  color: var(--habi-dark);
+}
+.insight-headline .delta.up { color: var(--income); }
+.insight-headline .delta.down { color: var(--cost); }
+
+.insight-detail {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.insight-detail .row-pair { display: flex; flex-direction: column; }
+.insight-detail .row-pair .lbl {
+  font-family: inherit; font-size: 9.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.insight-detail .row-pair .val {
+  font-size: 12px; color: var(--text-strong); font-weight: 600;
+}
+.insight-detail .arrow {
+  color: var(--muted); font-size: 14px;
+}
+
+.insights-empty {
+  grid-column: 1 / -1;
+  padding: 18px;
+  background: var(--panel-2);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
 
 /* ─── comparativa: context + tabla ─── */
 .cmp-context {
@@ -451,3 +569,52 @@ tbody td.clickable:hover::before { opacity: 0.6; }
   padding: 40px 20px;
   font-size: 13px;
 }
+
+/* ─── botón reportar ─── */
+.drill-actions {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  background: #fff2f1;
+  border: 1px solid #fbd6d3;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.drill-actions[hidden] { display: none !important; }
+.btn-report {
+  background: var(--cost);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.btn-report:hover:not(:disabled) { background: #b0231a; }
+.btn-report:disabled { background: #d0c9d3; cursor: not-allowed; }
+.drill-actions-note {
+  color: var(--muted); font-size: 11px; line-height: 1.35;
+}
+
+/* ─── toast ─── */
+.toast {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  padding: 12px 18px;
+  background: var(--text-strong);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(15, 8, 36, 0.25);
+  z-index: 200;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--income); }
+.toast.error { background: var(--cost); }
