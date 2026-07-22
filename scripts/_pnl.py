@@ -122,8 +122,8 @@ PNL_STRUCTURE = [
 
     {"key": "transaction_costs", "label": "Transaction Costs", "parent": None, "type": "rubro", "sign": "cost"},
 
-    # ── transaction costs HC100 (pendiente: lógica del cálculo con Kamila) ──
-    {"key": "transaction_costs_hc100", "label": "Transaction Costs HC100", "parent": None, "type": "rubro", "sign": "cost", "pendiente": True},
+    # ── transaction costs HC100 (solo NIDs con hc100_financial='Si') ──
+    {"key": "transaction_costs_hc100", "label": "Transaction Costs HC100", "parent": None, "type": "rubro", "sign": "cost"},
 
     # ── holding costs ──
     {"key": "hol_admin", "label": "Property Management Fees", "parent": "holding", "type": "subcuenta", "sign": "cost"},
@@ -232,9 +232,28 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
 
     lines["transaction_costs"] = lines["tramites_sellers"] + lines["tramites_buyers"]
 
-    # Transaction Costs HC100: línea del Excel que no se deriva de las columnas
-    # de la query. Placeholder = 0 hasta que confirmemos con Kamila la fórmula.
-    lines["transaction_costs_hc100"] = pd.Series(0.0, index=df.index)
+    # ── Transaction Costs HC100 ──
+    # Excel SUMIFS(cols, hc100_financial='Si'). En ACC usa las 4 columnas
+    # *_accounting de buyers. En SINTETICO usa *_ue para apertura/avaluo/
+    # inscripcion (SIN fallback a _accounting a diferencia del resto de sint)
+    # y *_accounting solo para notariales (única que no tiene _ue).
+    is_hc100 = df["hc100_financial"].astype(str).eq("Si")
+    if is_sint:
+        hc100_lines = (
+            _num(df["tramites_buyers_apertura_expediente_ue"])
+            + _num(df["tramites_buyers_avaluo_ue"])
+            + _num(df["tramites_buyers_inscripcion_credito_ue"])
+            + _num(df["tramites_buyers_costos_notariales_accounting"])
+        )
+    else:
+        hc100_lines = (
+            _num(df["tramites_buyers_apertura_expediente_accounting"])
+            + _num(df["tramites_buyers_avaluo_accounting"])
+            + _num(df["tramites_buyers_inscripcion_credito_accounting"])
+            + _num(df["tramites_buyers_costos_notariales_accounting"])
+        )
+    # aplicar filtro HC100=Si (para el resto de NIDs → 0)
+    lines["transaction_costs_hc100"] = -hc100_lines.where(is_hc100, 0.0)
 
     # ── holding ──
     lines["hol_admin"] = -pick("holding_administracion_ue", "holding_administracion_accounting")
