@@ -295,6 +295,11 @@ function openDrill(row, mes) {
   const colIdx = facts.columnas.indexOf(row.key);
   if (colIdx < 0) return;
 
+  // Índice del GMV del NID (en MX: gmv_habi = sell_price_financial; hay tambien gmv_sin_hc100)
+  const gmvIdx = facts.columnas.indexOf('gmv_sin_hc100') >= 0
+    ? facts.columnas.indexOf('gmv_sin_hc100')
+    : facts.columnas.indexOf('gmv_habi');
+
   const items = [];
   const totalNids = facts.nid.length;
   for (let i = 0; i < totalNids; i++) {
@@ -303,7 +308,8 @@ function openDrill(row, mes) {
     if (!matchRegion || !matchMes) continue;
     const v = facts.valores[colIdx][i];
     if (v === 0) continue;
-    items.push({ nid: facts.nid[i], region: facts.region[i], valor: v });
+    const gmv = gmvIdx >= 0 ? facts.valores[gmvIdx][i] : 0;
+    items.push({ nid: facts.nid[i], region: facts.region[i], valor: v, gmv });
   }
 
   items.sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor));
@@ -344,20 +350,28 @@ function openDrill(row, mes) {
   const tbody = document.getElementById('drillTbody');
   tbody.innerHTML = '';
   if (items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="drill-empty">Sin NIDs en esta celda.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="drill-empty">Sin NIDs en esta celda.</td></tr>`;
   } else {
     items.forEach((it, idx) => {
       const tr = document.createElement('tr');
       const alerted = isAlert(it.valor);
       if (alerted) tr.classList.add('alert');
-      const pct = total !== 0 ? (it.valor / total * 100) : 0;
+      const pctLinea = total !== 0 ? (it.valor / total * 100) : 0;
+      // % del GMV del NID individual — key insight solicitado por Kamila
+      const pctGmv = (it.gmv && it.gmv !== 0) ? (it.valor / it.gmv * 100) : null;
       const valCls = it.valor < 0 ? 'cost' : 'income';
       const regionLbl = state.region === 'Total' ? ` <span style="color:var(--muted); font-size:10px">· ${it.region}</span>` : '';
+      const gmvStr = it.gmv ? fmtAbs(it.gmv) : '—';
+      const pctGmvStr = pctGmv !== null
+        ? `<span class="pct-strong">${pctGmv >= 0 ? '+' : ''}${pctGmv.toFixed(1)}%</span>`
+        : '—';
       tr.innerHTML = `
         <td>${idx + 1}</td>
         <td class="nid"><a href="https://tu.habi.mx/nid/${it.nid}" target="_blank" rel="noopener">${it.nid}</a>${regionLbl}</td>
         <td class="val ${valCls}">${fmtAbs(it.valor)}</td>
-        <td class="pct">${pct.toFixed(1)}%</td>
+        <td class="val">${gmvStr}</td>
+        <td class="pct">${pctGmvStr}</td>
+        <td class="pct">${pctLinea.toFixed(1)}%</td>
         <td class="flag" title="${alerted ? 'Signo contrario al esperado (posible reversión / ajuste)' : ''}">${alerted ? '🚩' : ''}</td>
       `;
       tbody.appendChild(tr);

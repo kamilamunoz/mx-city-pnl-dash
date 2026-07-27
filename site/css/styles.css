@@ -299,7 +299,9 @@ td.signo-income { color: var(--income); }
 td.signo-cost { color: var(--cost); }
 td.signo-net { color: var(--net); font-weight: 600; }
 td.pct { color: var(--muted); font-size: 10.5px; font-weight: 400; }
-tbody tr td .pct { color: var(--muted); font-size: 10.5px; font-weight: 400; display: block; margin-top: 1px; }
+tbody tr td .pct { color: #4a5568; font-size: 11px; font-weight: 500; display: block; margin-top: 2px; letter-spacing: 0.02em; }
+tbody tr.tipo-total td .pct,
+tbody tr.tipo-rubro td .pct { color: #1f4e78; font-weight: 600; }
 
 .footnote {
   color: var(--muted);
@@ -557,6 +559,7 @@ tbody td.clickable:hover::before { opacity: 0.6; }
 .drill-table tbody td.val.cost { color: var(--cost); }
 .drill-table tbody td.val.income { color: var(--income); }
 .drill-table tbody td.pct { text-align: right; color: var(--muted); }
+.drill-table tbody td .pct-strong { color: #1f4e78; font-weight: 600; }
 .drill-table tbody td.flag { text-align: center; font-size: 14px; }
 
 .drill-table tr.alert td { background: #fff2f1; }
