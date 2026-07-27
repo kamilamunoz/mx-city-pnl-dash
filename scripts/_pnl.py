@@ -25,6 +25,9 @@ MIN_ROWS_PER_REGION = 50
 # 2026-07-21: la mayoría son EDO MEX sin etiquetar).
 DEFAULT_REGION_FOR_NULLS = "EDO MEX"
 LABEL_OTROS = "Otros"
+# Regiones que SIEMPRE se muestran individualmente, sin importar si están debajo
+# del umbral MIN_ROWS_PER_REGION. Decisión operativa de Kamila (2026-07-27).
+WHITELIST_REGIONS = {"GUANAJUATO"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,8 +47,11 @@ def _coalesce_ue_acc(df: pd.DataFrame, ue_col: str, acc_col: str) -> pd.Series:
 
 
 def _normalize_region(region: pd.Series, counts: pd.Series) -> pd.Series:
-    """NaN → EDO MEX (default). Regiones con <MIN_ROWS_PER_REGION → 'Otros'."""
-    below = counts[counts < MIN_ROWS_PER_REGION].index.tolist()
+    """NaN → EDO MEX (default). Regiones con <MIN_ROWS_PER_REGION → 'Otros',
+    salvo las que estén en WHITELIST_REGIONS (se muestran siempre individuales).
+    """
+    below = [r for r in counts[counts < MIN_ROWS_PER_REGION].index.tolist()
+             if r not in WHITELIST_REGIONS]
     out = region.where(region.notna(), DEFAULT_REGION_FOR_NULLS)
     out = out.where(~out.isin(below), LABEL_OTROS)
     return out
