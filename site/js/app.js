@@ -1,7 +1,7 @@
 // mx-city-pnl-dash — frontend
 // Kamila mantiene sola. Vanilla JS, sin frameworks.
 
-const PASSWORD = 'EYPx9AUmLsamlp5g';
+const PASSWORD = 'p&L_M3x1c0*C12d4d';
 const STORAGE_KEY = 'mx-pnl-auth';
 
 // Webhook de Google Chat para reportar NIDs con signo raro a Jeff.
