@@ -604,7 +604,7 @@ function renderCmpInsights(regionesSel, sums) {
 function renderCmp() {
   const meses = cmpMesesRange();
   document.getElementById('cmpContext').textContent =
-    `${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'MXN 000\'s' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'MXN por NID facturado'}`;
+    `${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'MXN 000\'s (con % del Revenue debajo)' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'MXN por NID facturado'}`;
 
   const regionesSel = state.data.regiones
     .filter(r => r.key !== 'Total' && state.cmpRegiones.has(r.key))
@@ -665,6 +665,21 @@ function renderCmp() {
     return fmt(val);
   };
 
+  // Cuando la métrica activa es 'abs', mostrar también el % del Revenue debajo
+  // (mismo patrón que la tabla principal). Base = gmv_sin_hc100 de la región.
+  const showPctBelow = state.cmpMetrica === 'abs';
+  const pctExcluded = new Set(['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100']);
+  const renderCellValue = (rawVal, val, row, region) => {
+    if (val === null || val === undefined) return '—';
+    const base = fmtCell(val, row);
+    if (!showPctBelow) return base;
+    if (pctExcluded.has(row.key) || row.sign === 'count') return base;
+    const rev = revenueByRegion[region];
+    if (!rev || !isFinite(rev)) return base;
+    const pct = rawVal / rev;
+    return `${base}<br><span class="pct">${fmtPct(pct)}</span>`;
+  };
+
   for (const row of structure) {
     const tr = document.createElement('tr');
     tr.className = `tipo-${row.type}`;
@@ -701,7 +716,7 @@ function renderCmp() {
       cell.className = `region-col signo-${row.sign}`;
       if (r === best) cell.classList.add('best');
       if (r === worst) cell.classList.add('worst');
-      cell.textContent = fmtCell(val, row);
+      cell.innerHTML = renderCellValue(raw, val, row, r);
       if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
         cell.classList.add('clickable');
         cell.addEventListener('click', () => openCmpDrill(row, r, meses));
@@ -713,7 +728,7 @@ function renderCmp() {
     const totalVal = totalRaw === undefined ? null : applyMetric(totalRaw, 'Total', row);
     const totalCell = document.createElement('td');
     totalCell.className = `region-col total-col signo-${row.sign}`;
-    totalCell.textContent = fmtCell(totalVal, row);
+    totalCell.innerHTML = renderCellValue(totalRaw, totalVal, row, 'Total');
     tr.appendChild(totalCell);
 
     body.appendChild(tr);
