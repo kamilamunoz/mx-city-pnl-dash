@@ -90,10 +90,13 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
 PNL_STRUCTURE = [
     # ── ingresos ──
+    # gmv_habi ya incluye el Fee HC100 (venta bruta). El fee se muestra como
+    # breakdown informativo debajo. La base de cálculo de todos los ratios
+    # (unit costs, márgenes) es gmv_sin_hc100, no gmv_habi.
     {"key": "invoiced_sales", "label": "# Invoiced Sales", "parent": None, "type": "kpi", "sign": "count"},
     {"key": "gmv_habi", "label": "(+) GMV Precio de Venta Habi", "parent": None, "type": "kpi", "sign": "income"},
-    {"key": "fee_hc100", "label": "(+) Fee HC100", "parent": None, "type": "kpi", "sign": "income"},
-    {"key": "gmv_sin_hc100", "label": "GMV Selling Price (sin HC100)", "parent": None, "type": "kpi", "sign": "income"},
+    {"key": "fee_hc100", "label": "del cual: Fee HC100", "parent": "gmv_habi", "type": "subcuenta", "sign": "net"},
+    {"key": "gmv_sin_hc100", "label": "(+) GMV Selling Price (sin HC100)", "parent": None, "type": "kpi", "sign": "income"},
     {"key": "purchase_price", "label": "(-) GMV Purchase Price", "parent": None, "type": "kpi", "sign": "cost"},
     {"key": "gross_profit", "label": "(=) Gross Profit", "parent": None, "type": "total", "sign": "net"},
     {"key": "iva", "label": "(-) IVA", "parent": None, "type": "kpi", "sign": "cost"},
@@ -187,7 +190,9 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
     lines["gmv_sin_hc100"] = _num(df["sell_price_MM_sin_HC100_financial"])
     lines["fee_hc100"] = lines["gmv_habi"] - lines["gmv_sin_hc100"]
     lines["purchase_price"] = -_num(df["buy_price_financial"])
-    lines["gross_profit"] = lines["gmv_habi"] + lines["purchase_price"]
+    # Gross Profit se calcula sobre GMV sin fee HC100 (base de units cost).
+    # El fee HC100 no es margen operativo de Habi (se entrega a la fiduciaria).
+    lines["gross_profit"] = lines["gmv_sin_hc100"] + lines["purchase_price"]
     lines["iva"] = -_num(df["IVA"])
     lines["gp_sin_iva"] = lines["gross_profit"] + lines["iva"]
 

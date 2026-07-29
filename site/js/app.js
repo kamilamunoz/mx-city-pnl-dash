@@ -30,7 +30,7 @@ const state = {
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
-const NON_DRILLABLE = new Set(['invoiced_sales']);
+const NON_DRILLABLE = new Set(['invoiced_sales', 'fee_hc100']);
 
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
