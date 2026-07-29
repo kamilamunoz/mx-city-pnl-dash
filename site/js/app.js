@@ -239,7 +239,7 @@ function renderTable() {
   body.innerHTML = '';
 
   const revByMonth = {};
-  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['gmv_sin_hc100'] || 0;
+  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['gmv_habi'] || 0;
 
   const showPctRow = (row) => !['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100'].includes(row.key);
 
@@ -295,10 +295,8 @@ function openDrill(row, mes) {
   const colIdx = facts.columnas.indexOf(row.key);
   if (colIdx < 0) return;
 
-  // Índice del GMV del NID (en MX: gmv_habi = sell_price_financial; hay tambien gmv_sin_hc100)
-  const gmvIdx = facts.columnas.indexOf('gmv_sin_hc100') >= 0
-    ? facts.columnas.indexOf('gmv_sin_hc100')
-    : facts.columnas.indexOf('gmv_habi');
+  // Base de % por-NID = gmv_habi (con fee HC100 incluido).
+  const gmvIdx = facts.columnas.indexOf('gmv_habi');
 
   const items = [];
   const totalNids = facts.nid.length;
@@ -519,7 +517,7 @@ function renderCmpInsights(regionesSel, sums) {
     if (raw === undefined || raw === null) return null;
     if (kpi.key === 'invoiced_sales') return raw;
     if (kpi.norm === 'pct') {
-      const rev = sums[region]['gmv_sin_hc100'] || 0;
+      const rev = sums[region]['gmv_habi'] || 0;
       if (!rev) return null;
       return raw / rev;
     }
@@ -638,7 +636,7 @@ function renderCmp() {
   const revenueByRegion = {};
   const nidsByRegion = {};
   for (const r of [...regionesSel, 'Total']) {
-    revenueByRegion[r] = sums[r]['gmv_sin_hc100'] || 0;
+    revenueByRegion[r] = sums[r]['gmv_habi'] || 0;
     nidsByRegion[r] = sums[r]['invoiced_sales'] || 0;
   }
 
@@ -666,7 +664,7 @@ function renderCmp() {
   };
 
   // Cuando la métrica activa es 'abs', mostrar también el % del Revenue debajo
-  // (mismo patrón que la tabla principal). Base = gmv_sin_hc100 de la región.
+  // (mismo patrón que la tabla principal). Base = gmv_habi (con fee incluido).
   const showPctBelow = state.cmpMetrica === 'abs';
   const pctExcluded = new Set(['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100']);
   const renderCellValue = (rawVal, val, row, region) => {
@@ -741,10 +739,8 @@ function openCmpDrill(row, region, meses) {
   const colIdx = facts.columnas.indexOf(row.key);
   if (colIdx < 0) return;
 
-  // Índice de GMV del NID (MX: gmv_sin_hc100 preferido, fallback gmv_habi)
-  const gmvIdx = facts.columnas.indexOf('gmv_sin_hc100') >= 0
-    ? facts.columnas.indexOf('gmv_sin_hc100')
-    : facts.columnas.indexOf('gmv_habi');
+  // Base de % por-NID = gmv_habi (con fee HC100 incluido).
+  const gmvIdx = facts.columnas.indexOf('gmv_habi');
 
   const mesSet = new Set(meses);
   // agrupar por NID sumando el valor Y el GMV en todos los meses del período
