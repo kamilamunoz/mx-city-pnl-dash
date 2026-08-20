@@ -172,11 +172,34 @@ PNL_STRUCTURE = [
     {"key": "unlevered_profit", "label": "(=) Unlevered Profit", "parent": None, "type": "total", "sign": "net"},
     {"key": "financing_costs", "label": "(-) Financing Costs", "parent": None, "type": "kpi", "sign": "cost"},
     {"key": "contribution_margin", "label": "(=) Contribution Margin", "parent": None, "type": "total", "sign": "net"},
+]
 
-    # ── local OpEx (fuentes externas: payroll de Lis, rent de Danibot, mkt pendiente) ──
-    # Los `extern` no tienen valores per-NID (no drillable). Los `only_total` sólo se
-    # renderizan cuando la región seleccionada es "Total" (WeWork mezcla NL+JAL, y el
-    # 12,2% Nacional son servicios sin ciudad — no cuadran con una región individual).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# estructura del waterfall CONSOLIDADO (tab MM + Inmo)
+# ─────────────────────────────────────────────────────────────────────────────
+# Suma MM y Inmo por región×mes y aplica Local OpEx UNA sola vez al final
+# (payroll/rent/marketing sirven a ambas líneas, no solo a MM).
+# Los rubros MM/Inmo son filas separadas para lectura del waterfall
+# (Contribution MM + Contribution Inmo = Contribution Total).
+
+PNL_STRUCTURE_CONSOLIDATED = [
+    # ── conteos ──
+    {"key": "cons_props_mm", "label": "# Properties MM", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_props_inmo", "label": "# Properties Inmo", "parent": "cons_props_total", "type": "kpi", "sign": "count"},
+    {"key": "cons_props_total", "label": "# Properties Total", "parent": None, "type": "total", "sign": "count"},
+
+    # ── revenue (GMV) ──
+    {"key": "cons_gmv_mm", "label": "GMV MM", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
+    {"key": "cons_gmv_inmo", "label": "GMV Inmo (Inmo 100 + Tradicional)", "parent": "cons_gmv_total", "type": "kpi", "sign": "income"},
+    {"key": "cons_gmv_total", "label": "(=) GMV Consolidado", "parent": None, "type": "total", "sign": "income"},
+
+    # ── contribution por línea ──
+    {"key": "cons_cm_mm", "label": "Contribution Margin MM", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
+    {"key": "cons_cm_inmo", "label": "Contribution Margin Inmo", "parent": "cons_cm_total", "type": "kpi", "sign": "net"},
+    {"key": "cons_cm_total", "label": "(=) Contribution Margin Total", "parent": None, "type": "total", "sign": "net"},
+
+    # ── local OpEx (mismo bloque que antes, ahora aquí en el consolidado) ──
     {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
     {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
     {"key": "rent_wework_nl_jal", "label": "Rent NL + JAL (WeWork · no separable)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
@@ -184,8 +207,10 @@ PNL_STRUCTURE = [
     {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
      "note": "Proveedores de servicios sin ciudad atribuible (telecoms, papelería, terceros nacionales). Vendors principales: AT&T Comunicaciones Digitales, México Red de Telecomunicaciones, A de A México, Manuel Gutierrez González, Du Papier, Daniel Sebastián Ávila Arroyo. Representa ~12% del Rent MX YTD según el mapeo de Danibot."},
     {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
-    {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
-    {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True},
+    {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True,
+     "note": "Marketing digital atribuido por área metropolitana (Facebook, Google, etc.). Sirve a MM y a Inmo — por eso se resta solo en el consolidado."},
+    {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True,
+     "note": "Payroll + Rent + Marketing city-level. Sirve a MM y a Inmo simultáneamente, por eso se aplica UNA sola vez sobre la Contribution Total (no sobre MM o Inmo por separado)."},
     {"key": "net_city_contribution", "label": "(=) Net City Contribution", "parent": None, "type": "total", "sign": "net", "extern": True},
 ]
 
@@ -367,47 +392,91 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
 _RENT_ONLY_TOTAL = ("rent_wework_nl_jal", "rent_nacional")
 
 
-def merge_local_opex(base_long: pd.DataFrame, opex_long: pd.DataFrame | None) -> pd.DataFrame:
-    """Concatena filas de local_opex + calcula derivados (rent, local_opex, net_city_contribution).
+def build_consolidated_long(
+    mm_long: pd.DataFrame,
+    inmo_long: pd.DataFrame | None,
+    opex_long: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Construye el waterfall consolidado MM + Inmo + Local OpEx.
 
-    - `base_long` es la salida de `aggregate_all_regions` (incluye 'Total').
+    - `mm_long` es la salida de `aggregate_all_regions(df_mm, vista)` (incluye 'Total').
+    - `inmo_long` tiene columnas [region, mes, key, valor] con las keys nativas de Inmo:
+      contribution_margin, gmv_inmo100, gmv_trad, properties_total.
+      Puede ser None si no se cargó Inmo.
     - `opex_long` tiene columnas [region, mes, key, valor] con las sublíneas externas:
       payroll_local, rent_atribuible, rent_wework_nl_jal, rent_nacional, marketing_city.
 
+    Genera claves consolidadas:
+      cons_props_mm, cons_props_inmo, cons_props_total,
+      cons_gmv_mm,   cons_gmv_inmo,   cons_gmv_total,
+      cons_cm_mm,    cons_cm_inmo,    cons_cm_total,
+      (payroll_local, rent_*, marketing_city, rent, local_opex, net_city_contribution).
+
     Reglas:
-    - `rent` (grupo) se emite si `rent_atribuible` está presente (WeWork/Nacional = 0 si faltan).
-    - `local_opex` se emite si `payroll_local` Y `rent_atribuible` están presentes.
-      `marketing_city` cuenta como 0 mientras está pendiente.
-    - `net_city_contribution` = `contribution_margin` + `local_opex` (si ambos existen).
-    - Meses sin payroll (post-corte de Lis) → no se emite `local_opex` ni `net_city_contribution`.
-      El frontend renderiza '—' cuando la clave falta.
+    - Si Inmo no está para (region, mes) → cons_props_inmo=0, cons_gmv_inmo=0, cons_cm_inmo=0
+      (Inmo no operó ahí ese mes).
+    - `rent` = rent_atribuible + WeWork(0 si falta) + Nacional(0 si falta).
+    - `local_opex` = payroll + rent + marketing (marketing=0 si no está). Requiere
+      payroll_local y rent_atribuible; si falta alguno (post-cobertura), no se emite.
+    - `net_city_contribution` = cons_cm_total + local_opex (emite null si local_opex falta).
     """
-    if opex_long is None or len(opex_long) == 0:
-        return base_long
+    # 1) MM: extraer invoiced_sales, gmv_habi, contribution_margin por (region, mes)
+    mm_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    mm_keys_of_interest = {"invoiced_sales", "gmv_habi", "contribution_margin"}
+    for row in mm_long.itertuples():
+        if row.key in mm_keys_of_interest:
+            mm_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
 
-    # (region, mes) → {key: valor}
+    # 2) Inmo: extraer properties_total, gmv_inmo100+gmv_trad, contribution_margin
+    inmo_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    if inmo_long is not None and len(inmo_long) > 0:
+        for row in inmo_long.itertuples():
+            inmo_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    # 3) OpEx: (region, mes) → {payroll_local, rent_atribuible, ...}
     opex_by_cell: dict[tuple[str, str], dict[str, float]] = {}
-    for row in opex_long.itertuples():
-        opex_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+    if opex_long is not None and len(opex_long) > 0:
+        for row in opex_long.itertuples():
+            opex_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
 
-    # (region, mes) → contribution_margin
-    contrib_by_cell: dict[tuple[str, str], float] = {}
-    cm_rows = base_long[base_long["key"] == "contribution_margin"]
-    for row in cm_rows.itertuples():
-        contrib_by_cell[(row.region, row.mes)] = float(row.valor)
-
+    # 4) Emitir filas consolidadas para todas las (region, mes) donde exista MM ó Inmo.
+    all_cells = set(mm_by_cell.keys()) | set(inmo_by_cell.keys())
     new_rows: list[dict] = []
-    for (region, mes), cells in opex_by_cell.items():
-        # publicar sublineas tal cual
+    for (region, mes) in all_cells:
+        mm = mm_by_cell.get((region, mes), {})
+        inmo = inmo_by_cell.get((region, mes), {})
+
+        props_mm = mm.get("invoiced_sales", 0.0)
+        props_inmo = inmo.get("properties_total", 0.0)
+        gmv_mm = mm.get("gmv_habi", 0.0)
+        gmv_inmo = inmo.get("gmv_inmo100", 0.0) + inmo.get("gmv_trad", 0.0)
+        cm_mm = mm.get("contribution_margin", 0.0)
+        cm_inmo = inmo.get("contribution_margin", 0.0)
+
+        new_rows.extend([
+            {"region": region, "mes": mes, "key": "cons_props_mm", "valor": props_mm},
+            {"region": region, "mes": mes, "key": "cons_props_inmo", "valor": props_inmo},
+            {"region": region, "mes": mes, "key": "cons_props_total", "valor": props_mm + props_inmo},
+            {"region": region, "mes": mes, "key": "cons_gmv_mm", "valor": gmv_mm},
+            {"region": region, "mes": mes, "key": "cons_gmv_inmo", "valor": gmv_inmo},
+            {"region": region, "mes": mes, "key": "cons_gmv_total", "valor": gmv_mm + gmv_inmo},
+            {"region": region, "mes": mes, "key": "cons_cm_mm", "valor": cm_mm},
+            {"region": region, "mes": mes, "key": "cons_cm_inmo", "valor": cm_inmo},
+            {"region": region, "mes": mes, "key": "cons_cm_total", "valor": cm_mm + cm_inmo},
+        ])
+
+        # Local OpEx: solo si hay data en la fuente para (region, mes)
+        cells = opex_by_cell.get((region, mes), {})
         for k, v in cells.items():
             new_rows.append({"region": region, "mes": mes, "key": k, "valor": v})
 
-        # rent (grupo): requiere rent_atribuible; WeWork/Nacional = 0 si faltan
+        # rent (grupo): requiere rent_atribuible
         if "rent_atribuible" in cells:
             rent_val = cells["rent_atribuible"] + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL)
             new_rows.append({"region": region, "mes": mes, "key": "rent", "valor": rent_val})
 
-        # local_opex: requiere payroll + rent_atribuible; marketing pendiente = 0
+        # local_opex + net_city_contribution: requieren payroll + rent_atribuible.
+        # Marketing = 0 si no está.
         if "payroll_local" in cells and "rent_atribuible" in cells:
             local_opex_val = (
                 cells["payroll_local"]
@@ -416,19 +485,10 @@ def merge_local_opex(base_long: pd.DataFrame, opex_long: pd.DataFrame | None) ->
                 + cells.get("marketing_city", 0.0)
             )
             new_rows.append({"region": region, "mes": mes, "key": "local_opex", "valor": local_opex_val})
-
-            # net_city_contribution = contribution_margin + local_opex.
-            # Si la región/mes no cerró NIDs (contribution ausente en el base),
-            # se trata como 0 → net = local_opex (el gasto local no tuvo offset ese mes).
-            contrib = contrib_by_cell.get((region, mes), 0.0)
             new_rows.append({
                 "region": region, "mes": mes,
                 "key": "net_city_contribution",
-                "valor": contrib + local_opex_val,
+                "valor": (cm_mm + cm_inmo) + local_opex_val,
             })
 
-    if not new_rows:
-        return base_long
-
-    extra_df = pd.DataFrame(new_rows)
-    return pd.concat([base_long, extra_df], ignore_index=True)
+    return pd.DataFrame(new_rows) if new_rows else pd.DataFrame(columns=["region", "mes", "key", "valor"])

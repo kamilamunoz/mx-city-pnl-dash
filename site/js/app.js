@@ -12,6 +12,7 @@ const REPORTER_NAME = 'Kamila (dashboard MX P&L)';
 const state = {
   data: null,          // kpi_pnl.json
   facts: null,         // kpi_pnl_facts.json
+  consData: null,      // kpi_pnl_consolidated.json (MM + Inmo + Local OpEx)
   // último drill abierto (para el botón de reporte)
   lastDrill: null,     // { row, contextLabel, alertItems, total, vista }
   // tab 1: P&L por región
@@ -29,6 +30,11 @@ const state = {
   cmpPeriodo: '3m',
   cmpRegiones: new Set(),
   cmpMetrica: 'abs',
+  // tab 3: consolidado MM + Inmo
+  consVista: 'acc',
+  consRegion: 'Total',
+  consRango: '12',
+  consExpanded: new Set(),
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
@@ -65,12 +71,14 @@ function setupLogin() {
 
 // ─── data load ────────────────────────────────────────────────────────
 async function loadData() {
-  const [pnl, facts] = await Promise.all([
+  const [pnl, facts, cons] = await Promise.all([
     fetch(`data/kpi_pnl.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_facts.json?v=${Date.now()}`).then(r => r.json()),
+    fetch(`data/kpi_pnl_consolidated.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   state.data = pnl;
   state.facts = facts;
+  state.consData = cons;
 
   // por default, seleccionar todas las regiones reales (sin Total) para comparativa
   state.cmpRegiones = new Set(
@@ -99,7 +107,9 @@ function setupTabs() {
       document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x === b));
       document.getElementById('tab-pnl').hidden = t !== 'pnl';
       document.getElementById('tab-comparativa').hidden = t !== 'comparativa';
+      document.getElementById('tab-consolidado').hidden = t !== 'consolidado';
       if (t === 'comparativa') renderCmp();
+      if (t === 'consolidado') renderConsolidated();
     });
   });
 }
@@ -1029,6 +1039,173 @@ function setupReportButton() {
   document.getElementById('reportBtn').addEventListener('click', sendReport);
 }
 
+// ─── tab 3: consolidado MM + Inmo ─────────────────────────────────────
+function renderConsRegionCtrl() {
+  const el = document.getElementById('consRegionCtrl');
+  if (!el || !state.consData) return;
+  el.innerHTML = '';
+  for (const r of state.consData.regiones) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (r.key === state.consRegion ? ' active' : '');
+    b.dataset.region = r.key;
+    b.textContent = r.label;
+    b.addEventListener('click', () => {
+      state.consRegion = r.key;
+      el.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+    el.appendChild(b);
+  }
+}
+
+function setupConsControls() {
+  document.querySelectorAll('#consVistaCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consVista = b.dataset.vista;
+      document.querySelectorAll('#consVistaCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+  });
+  document.querySelectorAll('#consRangoCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.consRango = b.dataset.rango;
+      document.querySelectorAll('#consRangoCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+  });
+}
+
+function consMesesToShow() {
+  if (!state.consData) return [];
+  const all = state.consData.meses;
+  if (state.consRango === 'all') return all;
+  const n = parseInt(state.consRango, 10);
+  return all.slice(-n);
+}
+
+function renderConsolidated() {
+  if (!state.consData) {
+    const body = document.getElementById('consBody');
+    if (body) body.innerHTML = '<tr><td colspan="99">No hay datos consolidados. Corre <code>make refresh</code>.</td></tr>';
+    return;
+  }
+  const meses = consMesesToShow();
+  const structure = state.consData.estructura;
+  const dataRegion = (state.consData.vistas[state.consVista] || {})[state.consRegion] || {};
+
+  // Toggle expand/collapse igual que la tabla MM
+  const byKey = {};
+  for (const r of structure) byKey[r.key] = r;
+  const hasChildren = new Set();
+  for (const r of structure) if (r.parent) hasChildren.add(r.parent);
+  const chainExpanded = (row) => {
+    let cur = row;
+    while (cur && cur.parent) {
+      if (!state.consExpanded.has(cur.parent)) return false;
+      cur = byKey[cur.parent];
+    }
+    return true;
+  };
+
+  const isTotalView = state.consRegion === 'Total';
+  const filaVisible = (row) =>
+    (!row.only_total || isTotalView) && chainExpanded(row);
+  const structureFiltered = structure.filter(filaVisible);
+
+  const head = document.getElementById('consHead');
+  head.innerHTML = '';
+  head.appendChild(th('P&L Consolidado (MXN 000s)'));
+  for (const m of meses) head.appendChild(th(m));
+
+  const body = document.getElementById('consBody');
+  body.innerHTML = '';
+
+  // Base de % = cons_gmv_total (GMV MM + GMV Inmo) para lectura consistente
+  const revByMonth = {};
+  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['cons_gmv_total'] || 0;
+
+  const showPctRow = (row) =>
+    !['cons_props_mm', 'cons_props_inmo', 'cons_props_total',
+      'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_total'].includes(row.key)
+    && row.sign !== 'count';
+
+  for (const row of structureFiltered) {
+    const tr = document.createElement('tr');
+    tr.className = `tipo-${row.type}`;
+
+    // label + toggle + nota
+    const labelTd = document.createElement('td');
+    if (hasChildren.has(row.key)) {
+      const isExp = state.consExpanded.has(row.key);
+      const tog = document.createElement('span');
+      tog.className = 'toggle';
+      tog.textContent = isExp ? '▼' : '▶';
+      labelTd.appendChild(tog);
+      labelTd.appendChild(document.createTextNode(' ' + row.label));
+      labelTd.classList.add('expandable');
+      labelTd.addEventListener('click', () => {
+        if (state.consExpanded.has(row.key)) state.consExpanded.delete(row.key);
+        else state.consExpanded.add(row.key);
+        renderConsolidated();
+      });
+    } else {
+      labelTd.textContent = row.label;
+    }
+    if (row.note) {
+      const info = document.createElement('span');
+      info.className = 'row-note';
+      info.textContent = 'ⓘ';
+      info.title = row.note;
+      labelTd.appendChild(info);
+    }
+    tr.appendChild(labelTd);
+
+    for (const m of meses) {
+      const cell = (dataRegion[m] || {})[row.key];
+      const val = cell === undefined ? null : cell;
+      const isCount = row.sign === 'count';
+      const cellEl = document.createElement('td');
+      cellEl.classList.add(`signo-${row.sign}`);
+
+      // Verde en positivos para totales netos + los tres CM (MM/Inmo/Total)
+      const isProfitLine =
+        (row.type === 'total' && row.sign === 'net') ||
+        row.key === 'cons_cm_mm' || row.key === 'cons_cm_inmo';
+      if (isProfitLine && val !== null && val > 0) {
+        cellEl.classList.add('positivo-highlight');
+      }
+
+      if (showPctRow(row) && val !== null && revByMonth[m]) {
+        const pct = val / revByMonth[m];
+        cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
+      } else {
+        cellEl.textContent = fmt(val, isCount);
+      }
+
+      if (row.extern && val === null) {
+        cellEl.title = 'Sin dato en fuente externa (Lis/Danibot/BQ) para este mes';
+      }
+
+      tr.appendChild(cellEl);
+    }
+    body.appendChild(tr);
+  }
+
+  // Nota de coberturas
+  const lo = ((state.consData.meta || {}).local_opex) || {};
+  const inmoMeta = ((state.consData.meta || {}).inmo) || {};
+  const bits = [];
+  if (lo.payroll_cobertura_hasta) bits.push(`payroll hasta ${lo.payroll_cobertura_hasta} (Lis)`);
+  if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_mxn_per_usd})`);
+  if (lo.marketing_cobertura_hasta) bits.push(`marketing hasta ${lo.marketing_cobertura_hasta} (BQ)`);
+  if (inmoMeta.inmo_generado_en) bits.push(`Inmo generado ${inmoMeta.inmo_generado_en.slice(0,10)}`);
+  document.getElementById('consNota').innerHTML =
+    bits.length ? `<span style="color:var(--muted)">ⓘ</span> ${bits.join(' · ')}. Meses posteriores = '—'.` : '';
+}
+
 // ─── init ─────────────────────────────────────────────────────────────
 async function init() {
   await loadData();
@@ -1038,6 +1215,8 @@ async function init() {
   setupTabs();
   setupCmpControls();
   renderCmpRegionCtrl();
+  setupConsControls();
+  renderConsRegionCtrl();
   setupDrill();
   setupReportButton();
   renderTable();

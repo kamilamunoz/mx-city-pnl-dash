@@ -19,10 +19,11 @@ from scripts._pnl import (
     LABEL_OTROS,
     MIN_ROWS_PER_REGION,
     PNL_STRUCTURE,
+    PNL_STRUCTURE_CONSOLIDATED,
     REGION_ALIASES,
     aggregate_all_regions,
+    build_consolidated_long,
     line_values_per_nid,
-    merge_local_opex,
     prepare,
 )
 
@@ -38,6 +39,10 @@ RAW_PATH = REPO_ROOT / "data" / "raw_apartment_mx.parquet"
 RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_mx.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
+OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
+
+# JSON del dashboard Inmo MX (repo hermano). Se lee para el consolidado.
+INMO_JSON_PATH = Path.home() / "Finanzas-Habi" / "mx-inmo-pnl-dash" / "site" / "data" / "kpi_pnl.json"
 
 # Fuentes externas (Lis para payroll, Danibot para rent) — se leen del repo blt-dashboard.
 # Marketing sale de BigQuery directo (query de Kamila sobre sellers-main-prod.bi_mx),
@@ -271,6 +276,96 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
     return pd.DataFrame(rows), meta
 
 
+def _load_inmo_mx() -> tuple[pd.DataFrame | None, dict]:
+    """Lee el JSON del dashboard mx-inmo-pnl-dash y produce un long DF con las
+    keys necesarias para el consolidado: contribution_margin, gmv_inmo100,
+    gmv_trad, properties_total (por region, mes, vista).
+
+    Aplica REGION_ALIASES (CDMX → EDO MEX) sumando los valores de CDMX en EDO MEX.
+
+    Devuelve dict {vista → long_df} y meta con la fecha de generación del JSON.
+    """
+    if not INMO_JSON_PATH.exists():
+        log.warning("mx-inmo-pnl-dash JSON no encontrado en %s — consolidado sin Inmo", INMO_JSON_PATH)
+        return None, {}
+
+    inmo = json.loads(INMO_JSON_PATH.read_text(encoding="utf-8"))
+    meta = {
+        "inmo_generado_en": inmo.get("meta", {}).get("generado_en"),
+        "inmo_regiones_fuente": [r["key"] for r in inmo.get("regiones", [])],
+    }
+
+    keys_of_interest = {"contribution_margin", "gmv_inmo100", "gmv_trad", "properties_total"}
+
+    out_by_vista: dict[str, pd.DataFrame] = {}
+    for vista, data_region in inmo["vistas"].items():
+        # (region_final, mes, key) → valor acumulado (con fusión CDMX→EDO MEX)
+        acc: dict[tuple[str, str, str], float] = {}
+        for region_orig, months in data_region.items():
+            region_final = _alias_region(region_orig)
+            for mes, row in months.items():
+                for k, v in row.items():
+                    if k not in keys_of_interest:
+                        continue
+                    key = (region_final, mes, k)
+                    acc[key] = acc.get(key, 0.0) + float(v)
+        rows = [
+            {"region": r, "mes": m, "key": k, "valor": v}
+            for (r, m, k), v in acc.items()
+        ]
+        out_by_vista[vista] = pd.DataFrame(rows)
+
+    return out_by_vista, meta
+
+
+def _write_consolidated(
+    long_by_vista_mm: dict[str, pd.DataFrame],
+    inmo_by_vista: dict[str, pd.DataFrame] | None,
+    local_opex_df: pd.DataFrame | None,
+    regiones: list[dict],
+    meses_mm: list[str],
+    local_opex_meta: dict,
+    inmo_meta: dict,
+) -> None:
+    """Construye kpi_pnl_consolidated.json (MM + Inmo + Local OpEx aplicado 1 vez)."""
+    vistas_out: dict[str, dict] = {}
+    all_meses: set[str] = set(meses_mm)
+
+    for vista, mm_long in long_by_vista_mm.items():
+        inmo_long = None if inmo_by_vista is None else inmo_by_vista.get(vista)
+        cons_long = build_consolidated_long(mm_long, inmo_long, local_opex_df)
+        vistas_out[vista] = _long_to_nested(cons_long)
+        if inmo_long is not None and len(inmo_long) > 0:
+            all_meses.update(inmo_long["mes"].astype(str).unique().tolist())
+
+    # Unir meses de MM + Inmo (Inmo puede tener meses posteriores)
+    meses_ordenados = sorted(all_meses)
+
+    payload = {
+        "meta": {
+            "generado_en": datetime.now().isoformat(timespec="seconds"),
+            "descripcion": (
+                "Waterfall consolidado MM + Inmo por región×mes. El Local OpEx "
+                "(payroll+rent+marketing) se aplica UNA sola vez sobre la Contribution "
+                "Total porque sirve a ambas líneas de negocio."
+            ),
+            "local_opex": local_opex_meta,
+            "inmo": inmo_meta,
+            "currency": "MXN",
+            "unidad": "unidades absolutas (el frontend divide por 1000 para mostrar en 000's)",
+        },
+        "estructura": PNL_STRUCTURE_CONSOLIDATED,
+        "regiones": regiones,
+        "meses": meses_ordenados,
+        "vistas": vistas_out,
+    }
+
+    OUT_CONSOLIDATED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUT_CONSOLIDATED_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    log.info("Escrito → %s (%.1f KB)", OUT_CONSOLIDATED_PATH, OUT_CONSOLIDATED_PATH.stat().st_size / 1024)
+
+
 def main() -> None:
     if not RAW_PATH.exists():
         raise SystemExit(f"No existe {RAW_PATH}. Corre `make raw` primero.")
@@ -291,15 +386,22 @@ def main() -> None:
     log.info("Agregando vista Sintético ...")
     long_sint = aggregate_all_regions(df, "sintetico")
 
-    log.info("Cargando Local OpEx (payroll Lis + rent Danibot) ...")
+    # Local OpEx e Inmo se usan SOLO para el consolidado (no para el waterfall MM,
+    # que ahora cierra en Contribution Margin). Sirven a ambas líneas de negocio.
+    log.info("Cargando Local OpEx (payroll Lis + rent Danibot + marketing BQ) ...")
     local_opex_df, local_opex_meta = _load_local_opex_mx()
     if local_opex_df is not None:
-        log.info("Local OpEx: %d filas, payroll hasta %s, rent hasta %s",
+        log.info("Local OpEx: %d filas, payroll hasta %s, rent hasta %s, marketing hasta %s",
                  len(local_opex_df),
                  local_opex_meta.get("payroll_cobertura_hasta"),
-                 local_opex_meta.get("rent_cobertura_hasta"))
-        long_acc = merge_local_opex(long_acc, local_opex_df)
-        long_sint = merge_local_opex(long_sint, local_opex_df)
+                 local_opex_meta.get("rent_cobertura_hasta"),
+                 local_opex_meta.get("marketing_cobertura_hasta"))
+
+    log.info("Cargando Inmo MX (JSON de mx-inmo-pnl-dash) ...")
+    inmo_by_vista, inmo_meta = _load_inmo_mx()
+    if inmo_by_vista is not None:
+        log.info("Inmo: generado_en=%s, regiones fuente=%s",
+                 inmo_meta.get("inmo_generado_en"), inmo_meta.get("inmo_regiones_fuente"))
 
     meses = sorted(df["mes"].unique().tolist())
 
@@ -318,7 +420,6 @@ def main() -> None:
                 "min": pd.to_datetime(df["fecha_facturacion_venta"]).min().strftime("%Y-%m-%d"),
                 "max": pd.to_datetime(df["fecha_facturacion_venta"]).max().strftime("%Y-%m-%d"),
             },
-            "local_opex": local_opex_meta,
         },
         "estructura": PNL_STRUCTURE,
         "regiones": regiones,
@@ -366,6 +467,18 @@ def main() -> None:
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
         json.dump(facts_payload, f, ensure_ascii=False, separators=(",", ":"))
     log.info("Escrito → %s (%.1f KB)", OUT_FACTS_PATH, OUT_FACTS_PATH.stat().st_size / 1024)
+
+    # ── kpi_pnl_consolidated.json: waterfall MM + Inmo + Local OpEx ──
+    log.info("Construyendo consolidado MM + Inmo ...")
+    _write_consolidated(
+        long_by_vista_mm={"acc": long_acc, "sintetico": long_sint},
+        inmo_by_vista=inmo_by_vista,
+        local_opex_df=local_opex_df,
+        regiones=regiones,
+        meses_mm=meses,
+        local_opex_meta=local_opex_meta,
+        inmo_meta=inmo_meta,
+    )
 
 
 if __name__ == "__main__":
