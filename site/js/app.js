@@ -273,7 +273,8 @@ function renderTable() {
     tr.className = `tipo-${row.type}`;
     if (row.pendiente) tr.classList.add('pendiente');
 
-    // Primera celda: etiqueta + toggle si es expandible (rubro/grupo con hijos).
+    // Primera celda: etiqueta + toggle si es expandible (rubro/grupo con hijos)
+    // + ícono ⓘ con tooltip si la row tiene `note` en el schema.
     const labelTd = document.createElement('td');
     if (hasChildren.has(row.key)) {
       const isExp = state.expanded.has(row.key);
@@ -290,6 +291,13 @@ function renderTable() {
       });
     } else {
       labelTd.textContent = row.label;
+    }
+    if (row.note) {
+      const info = document.createElement('span');
+      info.className = 'row-note';
+      info.textContent = 'ⓘ';
+      info.title = row.note;
+      labelTd.appendChild(info);
     }
     tr.appendChild(labelTd);
 

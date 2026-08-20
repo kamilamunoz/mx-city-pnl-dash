@@ -179,8 +179,10 @@ PNL_STRUCTURE = [
     # 12,2% Nacional son servicios sin ciudad — no cuadran con una región individual).
     {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
     {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
-    {"key": "rent_wework_nl_jal", "label": "Rent NL + JAL (WeWork · no separable)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True},
-    {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True},
+    {"key": "rent_wework_nl_jal", "label": "Rent NL + JAL (WeWork · no separable)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
+     "note": "WeWork agrupa las oficinas de Monterrey (NL) y Guadalajara (JAL) bajo un solo c_tercero en OPEX. El grano de la fuente (proveedor × mes × país) no permite separar el gasto entre las dos ciudades — se muestra combinado solo en el consolidado."},
+    {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
+     "note": "Proveedores de servicios sin ciudad atribuible (telecoms, papelería, terceros nacionales). Vendors principales: AT&T Comunicaciones Digitales, México Red de Telecomunicaciones, A de A México, Manuel Gutierrez González, Du Papier, Daniel Sebastián Ávila Arroyo. Representa ~12% del Rent MX YTD según el mapeo de Danibot."},
     {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
     {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
     {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True},

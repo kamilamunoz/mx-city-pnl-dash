@@ -317,6 +317,15 @@ td.expandable:hover { background: #f3edff; }
   text-align: center;
   transition: transform 0.15s;
 }
+/* Ícono ⓘ con nota aclaratoria (tooltip nativo por `title`) */
+.row-note {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: help;
+}
+.row-note:hover { color: var(--habi-dark); }
 
 .footnote {
   color: var(--muted);
