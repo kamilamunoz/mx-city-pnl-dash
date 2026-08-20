@@ -28,6 +28,12 @@ LABEL_OTROS = "Otros"
 # Regiones que SIEMPRE se muestran individualmente, sin importar si están debajo
 # del umbral MIN_ROWS_PER_REGION. Decisión operativa de Kamila (2026-07-27).
 WHITELIST_REGIONS = {"GUANAJUATO"}
+# Fusión CDMX → EDO MEX. Decisión operativa de Kamila (2026-08-20): la mayoría
+# del OpEx local se contabiliza en CDMX pero aplica también a EDO MEX; ambas
+# regiones se tratan como una sola bajo el rótulo EDO MEX en todo el pipeline
+# (tracker, payroll, rent). Marketing ya mapea "Valle de México" → EDO MEX en
+# el query de origen.
+REGION_ALIASES = {"CDMX": "EDO MEX"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,6 +50,11 @@ def _coalesce_ue_acc(df: pd.DataFrame, ue_col: str, acc_col: str) -> pd.Series:
     ue = pd.to_numeric(df[ue_col], errors="coerce")
     acc = pd.to_numeric(df[acc_col], errors="coerce")
     return ue.where(ue.notna(), acc).fillna(0.0)
+
+
+def _apply_region_aliases(region: pd.Series) -> pd.Series:
+    """Fusión de regiones (p.ej. CDMX → EDO MEX). Se aplica antes de contar."""
+    return region.replace(REGION_ALIASES)
 
 
 def _normalize_region(region: pd.Series, counts: pd.Series) -> pd.Series:
@@ -65,13 +76,15 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     """Añade columna `mes` (YYYY-MM string) y `region_norm` (con 'Sin región' y 'Otros').
 
     Excluye filas con `fecha_facturacion_venta` nula (NIDs sin facturar todavía).
+    Aplica REGION_ALIASES (p.ej. CDMX → EDO MEX) antes de contar y normalizar.
     """
     out = df.copy()
     fecha = pd.to_datetime(out["fecha_facturacion_venta"])
     out = out.loc[fecha.notna()].copy()
     out["mes"] = pd.to_datetime(out["fecha_facturacion_venta"]).dt.to_period("M").astype(str)
-    counts_by_region = out["region"].value_counts(dropna=False)
-    out["region_norm"] = _normalize_region(out["region"], counts_by_region)
+    region_aliased = _apply_region_aliases(out["region"])
+    counts_by_region = region_aliased.value_counts(dropna=False)
+    out["region_norm"] = _normalize_region(region_aliased, counts_by_region)
     return out
 
 
@@ -159,6 +172,19 @@ PNL_STRUCTURE = [
     {"key": "unlevered_profit", "label": "(=) Unlevered Profit", "parent": None, "type": "total", "sign": "net"},
     {"key": "financing_costs", "label": "(-) Financing Costs", "parent": None, "type": "kpi", "sign": "cost"},
     {"key": "contribution_margin", "label": "(=) Contribution Margin", "parent": None, "type": "total", "sign": "net"},
+
+    # ── local OpEx (fuentes externas: payroll de Lis, rent de Danibot, mkt pendiente) ──
+    # Los `extern` no tienen valores per-NID (no drillable). Los `only_total` sólo se
+    # renderizan cuando la región seleccionada es "Total" (WeWork mezcla NL+JAL, y el
+    # 12,2% Nacional son servicios sin ciudad — no cuadran con una región individual).
+    {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "rent_wework_nl_jal", "label": "Rent NL + JAL (WeWork · no separable)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True},
+    {"key": "rent_nacional", "label": "Rent Nacional / no atribuible", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True},
+    {"key": "rent", "label": "Rent", "parent": "local_opex", "type": "grupo", "sign": "cost", "extern": True},
+    {"key": "marketing_city", "label": "Marketing (ciudad)", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "local_opex", "label": "(-) Local OpEx", "parent": None, "type": "rubro", "sign": "cost", "extern": True},
+    {"key": "net_city_contribution", "label": "(=) Net City Contribution", "parent": None, "type": "total", "sign": "net", "extern": True},
 ]
 
 
@@ -327,3 +353,80 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
     total["region"] = "Total"
     total_long = total.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     return pd.concat([by_region, total_long], ignore_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# inyección de Local OpEx (fuentes externas: payroll/rent/marketing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Componentes que suman al `rent` (grupo). `rent_atribuible` es requerido; los otros
+# dos son `only_total` (WeWork mezcla NL+JAL, Nacional son servicios sin ciudad) y
+# se tratan como 0 cuando no están presentes.
+_RENT_ONLY_TOTAL = ("rent_wework_nl_jal", "rent_nacional")
+
+
+def merge_local_opex(base_long: pd.DataFrame, opex_long: pd.DataFrame | None) -> pd.DataFrame:
+    """Concatena filas de local_opex + calcula derivados (rent, local_opex, net_city_contribution).
+
+    - `base_long` es la salida de `aggregate_all_regions` (incluye 'Total').
+    - `opex_long` tiene columnas [region, mes, key, valor] con las sublíneas externas:
+      payroll_local, rent_atribuible, rent_wework_nl_jal, rent_nacional, marketing_city.
+
+    Reglas:
+    - `rent` (grupo) se emite si `rent_atribuible` está presente (WeWork/Nacional = 0 si faltan).
+    - `local_opex` se emite si `payroll_local` Y `rent_atribuible` están presentes.
+      `marketing_city` cuenta como 0 mientras está pendiente.
+    - `net_city_contribution` = `contribution_margin` + `local_opex` (si ambos existen).
+    - Meses sin payroll (post-corte de Lis) → no se emite `local_opex` ni `net_city_contribution`.
+      El frontend renderiza '—' cuando la clave falta.
+    """
+    if opex_long is None or len(opex_long) == 0:
+        return base_long
+
+    # (region, mes) → {key: valor}
+    opex_by_cell: dict[tuple[str, str], dict[str, float]] = {}
+    for row in opex_long.itertuples():
+        opex_by_cell.setdefault((row.region, row.mes), {})[row.key] = float(row.valor)
+
+    # (region, mes) → contribution_margin
+    contrib_by_cell: dict[tuple[str, str], float] = {}
+    cm_rows = base_long[base_long["key"] == "contribution_margin"]
+    for row in cm_rows.itertuples():
+        contrib_by_cell[(row.region, row.mes)] = float(row.valor)
+
+    new_rows: list[dict] = []
+    for (region, mes), cells in opex_by_cell.items():
+        # publicar sublineas tal cual
+        for k, v in cells.items():
+            new_rows.append({"region": region, "mes": mes, "key": k, "valor": v})
+
+        # rent (grupo): requiere rent_atribuible; WeWork/Nacional = 0 si faltan
+        if "rent_atribuible" in cells:
+            rent_val = cells["rent_atribuible"] + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL)
+            new_rows.append({"region": region, "mes": mes, "key": "rent", "valor": rent_val})
+
+        # local_opex: requiere payroll + rent_atribuible; marketing pendiente = 0
+        if "payroll_local" in cells and "rent_atribuible" in cells:
+            local_opex_val = (
+                cells["payroll_local"]
+                + cells["rent_atribuible"]
+                + sum(cells.get(k, 0.0) for k in _RENT_ONLY_TOTAL)
+                + cells.get("marketing_city", 0.0)
+            )
+            new_rows.append({"region": region, "mes": mes, "key": "local_opex", "valor": local_opex_val})
+
+            # net_city_contribution = contribution_margin + local_opex.
+            # Si la región/mes no cerró NIDs (contribution ausente en el base),
+            # se trata como 0 → net = local_opex (el gasto local no tuvo offset ese mes).
+            contrib = contrib_by_cell.get((region, mes), 0.0)
+            new_rows.append({
+                "region": region, "mes": mes,
+                "key": "net_city_contribution",
+                "valor": contrib + local_opex_val,
+            })
+
+    if not new_rows:
+        return base_long
+
+    extra_df = pd.DataFrame(new_rows)
+    return pd.concat([base_long, extra_df], ignore_index=True)

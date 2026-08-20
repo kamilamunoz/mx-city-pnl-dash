@@ -2,19 +2,23 @@
 #
 # Uso:
 #   make install   instala dependencias con uv
-#   make raw       corre la query BQ y guarda data/raw_apartment_mx.parquet
-#   make refresh   raw + agrega P&L por (mes, region) y escribe site/data/kpi_pnl.json
+#   make raw       corre la query BQ del tracker MM y guarda data/raw_apartment_mx.parquet
+#   make raw_mkt   corre la query BQ de marketing por region y guarda data/raw_marketing_mx.parquet
+#   make refresh   agrega P&L por (mes, region) + Local OpEx y escribe site/data/kpi_pnl.json
 #   make serve     abre el sitio en http://localhost:8001/site/
 #   make lint      revisa el codigo Python con ruff
 #   make clean     borra archivos generados de Python (no toca los JSON)
 
-.PHONY: install raw refresh serve lint clean
+.PHONY: install raw raw_mkt refresh serve lint clean
 
 install:
 	uv sync
 
 raw:
 	uv run python -m scripts.fetch_raw
+
+raw_mkt:
+	uv run python -m scripts.fetch_marketing_mx
 
 refresh:
 	uv run python -m scripts.refresh_data

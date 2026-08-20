@@ -21,6 +21,8 @@ const state = {
   year: null,          // int (cuando rango==='year')
   rangeFrom: null,     // 'YYYY-MM' (cuando rango==='range')
   rangeTo: null,       // 'YYYY-MM'
+  // rubros/grupos expandidos (drill-down por niveles). Vacío = todo colapsado.
+  expanded: new Set(),
   // tab 2: comparativa
   activeTab: 'pnl',
   cmpVista: 'acc',
@@ -227,7 +229,30 @@ function renderTable() {
   const structure = state.data.estructura;
   const dataRegion = state.data.vistas[state.vista][state.region] || {};
 
-  const filaVisible = (row) => !row.vista || row.vista === state.vista;
+  // Índice y set de rows con hijos → habilita el toggle expand/collapse.
+  const byKey = {};
+  for (const r of structure) byKey[r.key] = r;
+  const hasChildren = new Set();
+  for (const r of structure) if (r.parent) hasChildren.add(r.parent);
+
+  // Una row es visible sólo si toda su cadena de ancestros está expandida.
+  const chainExpanded = (row) => {
+    let cur = row;
+    while (cur && cur.parent) {
+      if (!state.expanded.has(cur.parent)) return false;
+      cur = byKey[cur.parent];
+    }
+    return true;
+  };
+
+  // `only_total`: sublíneas de rent que no cuadran con una región individual
+  // (WeWork mezcla NL+JAL, Nacional son servicios sin ciudad) — se ocultan
+  // salvo en la vista consolidada.
+  const isTotalView = state.region === 'Total';
+  const filaVisible = (row) =>
+    (!row.vista || row.vista === state.vista) &&
+    (!row.only_total || isTotalView) &&
+    chainExpanded(row);
   const structureFiltered = structure.filter(filaVisible);
 
   const head = document.getElementById('pnlHead');
@@ -247,7 +272,26 @@ function renderTable() {
     const tr = document.createElement('tr');
     tr.className = `tipo-${row.type}`;
     if (row.pendiente) tr.classList.add('pendiente');
-    tr.appendChild(td(row.label));
+
+    // Primera celda: etiqueta + toggle si es expandible (rubro/grupo con hijos).
+    const labelTd = document.createElement('td');
+    if (hasChildren.has(row.key)) {
+      const isExp = state.expanded.has(row.key);
+      const tog = document.createElement('span');
+      tog.className = 'toggle';
+      tog.textContent = isExp ? '▼' : '▶';
+      labelTd.appendChild(tog);
+      labelTd.appendChild(document.createTextNode(' ' + row.label));
+      labelTd.classList.add('expandable');
+      labelTd.addEventListener('click', () => {
+        if (state.expanded.has(row.key)) state.expanded.delete(row.key);
+        else state.expanded.add(row.key);
+        renderTable();
+      });
+    } else {
+      labelTd.textContent = row.label;
+    }
+    tr.appendChild(labelTd);
 
     for (const m of meses) {
       const cell = (dataRegion[m] || {})[row.key];
@@ -256,6 +300,13 @@ function renderTable() {
       const cellEl = document.createElement('td');
       cellEl.classList.add(`signo-${row.sign}`);
 
+      // Highlight verde para valores POSITIVOS en líneas total con sign=net
+      // (gross_profit, gp_sin_iva, unlevered_profit, contribution_margin,
+      // net_city_contribution). Lectura rápida de ganancia.
+      if (row.type === 'total' && row.sign === 'net' && val !== null && val > 0) {
+        cellEl.classList.add('positivo-highlight');
+      }
+
       if (showPctRow(row) && val !== null && revByMonth[m]) {
         const pct = val / revByMonth[m];
         cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
@@ -263,7 +314,22 @@ function renderTable() {
         cellEl.textContent = fmt(val, isCount);
       }
 
-      if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
+      // Tooltip para meses sin payroll (o local_opex incompleto)
+      if (row.extern && val === null) {
+        cellEl.title = 'Sin dato en fuente externa (Lis/Danibot) para este mes';
+      }
+      // Tooltip específico: payroll = 0 para regiones sin sede en BBDD (HIDALGO tras la fusión CDMX→EDO MEX)
+      const sinSede = ((state.data.meta || {}).local_opex || {}).payroll_regiones_sin_sede || [];
+      if (row.key === 'payroll_local' && val === 0 && sinSede.includes(state.region)) {
+        cellEl.title = 'Sin sede propia en BBDD para esta región';
+      }
+
+      // Líneas externas (payroll/rent/marketing/local_opex/net_contrib) no drillean
+      const drillable = !NON_DRILLABLE.has(row.key)
+        && !row.pendiente
+        && !row.extern
+        && val !== null && val !== 0;
+      if (drillable) {
         cellEl.classList.add('clickable');
         cellEl.addEventListener('click', () => openDrill(row, m));
       }
@@ -273,9 +339,19 @@ function renderTable() {
   }
 
   const pend = structureFiltered.filter(r => r.pendiente).map(r => r.label);
-  document.getElementById('pendienteNota').innerHTML = pend.length
-    ? `<span style="color:var(--warn)">⚠</span> Líneas pendientes de definir con contabilidad: <b>${pend.join(', ')}</b>.`
-    : '';
+  const localOpexMeta = (state.data.meta || {}).local_opex || {};
+  const notas = [];
+  if (pend.length) {
+    notas.push(`<span style="color:var(--warn)">⚠</span> Líneas pendientes: <b>${pend.join(', ')}</b>.`);
+  }
+  if (localOpexMeta.payroll_cobertura_hasta || localOpexMeta.rent_cobertura_hasta || localOpexMeta.marketing_cobertura_hasta) {
+    const bits = [];
+    if (localOpexMeta.payroll_cobertura_hasta) bits.push(`payroll hasta ${localOpexMeta.payroll_cobertura_hasta} (Lis)`);
+    if (localOpexMeta.rent_cobertura_hasta) bits.push(`rent hasta ${localOpexMeta.rent_cobertura_hasta} (Danibot, FX ${localOpexMeta.fx_mxn_per_usd})`);
+    if (localOpexMeta.marketing_cobertura_hasta) bits.push(`marketing hasta ${localOpexMeta.marketing_cobertura_hasta} (BQ · FX ${localOpexMeta.fx_mxn_per_usd})`);
+    notas.push(`<span style="color:var(--muted)">ⓘ</span> Local OpEx: ${bits.join(' · ')}. Meses posteriores = '—'.`);
+  }
+  document.getElementById('pendienteNota').innerHTML = notas.join('<br>');
 }
 
 function th(text) {
@@ -707,6 +783,9 @@ function renderCmp() {
       }
     }
 
+    // Highlight verde para positivos en totales netos (mismo criterio que la tabla principal)
+    const isProfitTotal = row.type === 'total' && row.sign === 'net';
+
     for (const r of regionesSel) {
       const raw = sums[r][row.key];
       const val = raw === undefined ? null : applyMetric(raw, r, row);
@@ -714,6 +793,7 @@ function renderCmp() {
       cell.className = `region-col signo-${row.sign}`;
       if (r === best) cell.classList.add('best');
       if (r === worst) cell.classList.add('worst');
+      if (isProfitTotal && val !== null && val > 0) cell.classList.add('positivo-highlight');
       cell.innerHTML = renderCellValue(raw, val, row, r);
       if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
         cell.classList.add('clickable');
@@ -726,6 +806,7 @@ function renderCmp() {
     const totalVal = totalRaw === undefined ? null : applyMetric(totalRaw, 'Total', row);
     const totalCell = document.createElement('td');
     totalCell.className = `region-col total-col signo-${row.sign}`;
+    if (isProfitTotal && totalVal !== null && totalVal > 0) totalCell.classList.add('positivo-highlight');
     totalCell.innerHTML = renderCellValue(totalRaw, totalVal, row, 'Total');
     tr.appendChild(totalCell);
 

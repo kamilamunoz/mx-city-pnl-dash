@@ -298,10 +298,25 @@ tr.pendiente td:first-child::after {
 td.signo-income { color: var(--income); }
 td.signo-cost { color: var(--cost); }
 td.signo-net { color: var(--net); font-weight: 600; }
+/* Highlight verde para valores POSITIVOS en totales netos (gross profit, unlevered,
+   contribution margin, net city contribution). Lectura rápida de ganancia. */
+td.positivo-highlight { color: var(--income) !important; }
 td.pct { color: var(--muted); font-size: 10.5px; font-weight: 400; }
 tbody tr td .pct { color: #4a5568; font-size: 11px; font-weight: 500; display: block; margin-top: 2px; letter-spacing: 0.02em; }
 tbody tr.tipo-total td .pct,
 tbody tr.tipo-rubro td .pct { color: #1f4e78; font-weight: 600; }
+
+/* Drill-down colapsable: rubros/grupos con hijos */
+td.expandable { cursor: pointer; user-select: none; }
+td.expandable:hover { background: #f3edff; }
+.toggle {
+  display: inline-block;
+  width: 14px;
+  color: var(--habi-dark);
+  font-size: 10px;
+  text-align: center;
+  transition: transform 0.15s;
+}
 
 .footnote {
   color: var(--muted);
