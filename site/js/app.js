@@ -26,6 +26,7 @@ const state = {
   expanded: new Set(),
   // tab 2: comparativa
   activeTab: 'pnl',
+  cmpSource: 'mm',       // 'mm' | 'consolidado'
   cmpVista: 'acc',
   cmpPeriodo: '3m',
   cmpRegiones: new Set(),
@@ -33,7 +34,10 @@ const state = {
   // tab 3: consolidado MM + Inmo
   consVista: 'acc',
   consRegion: 'Total',
-  consRango: '12',
+  consRango: '12',        // '6' | '12' | 'all' | 'year' | 'range'
+  consYear: null,
+  consRangeFrom: null,
+  consRangeTo: null,
   consExpanded: new Set(),
 };
 
@@ -526,15 +530,54 @@ function cmpMesLabel(meses) {
   return `${meses[0]} → ${meses[meses.length - 1]} (${meses.length} meses)`;
 }
 
+// Config por fuente para la tab de comparativa. `state.cmpSource` decide cuál se usa.
+function cmpSourceConfig() {
+  if (state.cmpSource === 'consolidado' && state.consData) {
+    return {
+      data: state.consData,
+      revenueKey: 'cons_gmv_total',
+      nidsKey: 'cons_props_total',
+      pctExcluded: new Set([
+        'cons_props_mm', 'cons_props_inmo', 'cons_props_total',
+        'cons_gmv_mm', 'cons_gmv_inmo', 'cons_gmv_total',
+      ]),
+      insightKPIs: [
+        { key: 'cons_cm_mm',           label: 'CM MM',                mode: 'income', norm: 'pct' },
+        { key: 'cons_cm_inmo',         label: 'CM Inmo',              mode: 'income', norm: 'pct' },
+        { key: 'cons_cm_total',        label: 'CM Total',             mode: 'income', norm: 'pct' },
+        { key: 'net_city_contribution', label: 'Net City Contribution', mode: 'income', norm: 'pct' },
+      ],
+      profitLines: new Set(['cons_cm_mm', 'cons_cm_inmo', 'cons_cm_total', 'net_city_contribution']),
+      drillable: false, // consolidado no tiene facts por-NID
+    };
+  }
+  return {
+    data: state.data,
+    revenueKey: 'gmv_habi',
+    nidsKey: 'invoiced_sales',
+    pctExcluded: new Set(['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100']),
+    insightKPIs: [
+      { key: 'gross_profit',       label: 'Gross Profit',         mode: 'income', norm: 'pct' },
+      { key: 'gp_sin_iva',         label: 'Gross Profit sin IVA', mode: 'income', norm: 'pct' },
+      { key: 'direct_costs',       label: 'Direct Costs',         mode: 'cost',   norm: 'pct' },
+      { key: 'contribution_margin', label: 'Contribution Margin', mode: 'income', norm: 'pct' },
+    ],
+    profitLines: new Set(),   // usa el criterio genérico type=total & sign=net
+    drillable: true,
+  };
+}
+
 function renderCmpRegionCtrl() {
   const el = document.getElementById('cmpRegionCtrl');
   el.innerHTML = '';
-  for (const r of state.data.regiones) {
+  const cfg = cmpSourceConfig();
+  for (const r of cfg.data.regiones) {
     if (r.key === 'Total') continue;  // Total no es seleccionable, siempre se muestra al final
     const b = document.createElement('button');
     b.className = 'seg-btn' + (state.cmpRegiones.has(r.key) ? ' active' : '');
     b.dataset.region = r.key;
-    b.textContent = r.label + ` (${r.filas.toLocaleString('es-MX')})`;
+    const filasStr = r.filas ? ` (${r.filas.toLocaleString('es-MX')})` : '';
+    b.textContent = r.label + filasStr;
     b.addEventListener('click', () => {
       if (state.cmpRegiones.has(r.key)) state.cmpRegiones.delete(r.key);
       else state.cmpRegiones.add(r.key);
@@ -546,6 +589,16 @@ function renderCmpRegionCtrl() {
 }
 
 function setupCmpControls() {
+  document.querySelectorAll('#cmpSourceCtrl .seg-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.cmpSource = b.dataset.source;
+      document.querySelectorAll('#cmpSourceCtrl .seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      // Rebuild region control (mismas 7 canónicas, pero por si acaso)
+      renderCmpRegionCtrl();
+      renderCmp();
+    });
+  });
   document.querySelectorAll('#cmpVistaCtrl .seg-btn').forEach(b => {
     b.addEventListener('click', () => {
       state.cmpVista = b.dataset.vista;
@@ -572,9 +625,11 @@ function setupCmpControls() {
   });
 }
 
-// Suma los valores de las líneas del P&L para una región en un rango de meses
-function sumRegionInRange(region, meses, vista) {
-  const dataR = (state.data.vistas[vista] || {})[region] || {};
+// Suma los valores de las líneas del P&L para una región en un rango de meses.
+// `dataObj` puede ser state.data (MM) o state.consData (Consolidado).
+function sumRegionInRange(region, meses, vista, dataObj) {
+  dataObj = dataObj || state.data;
+  const dataR = (dataObj.vistas[vista] || {})[region] || {};
   const acc = {};
   for (const m of meses) {
     const row = dataR[m] || {};
@@ -588,7 +643,7 @@ function sumRegionInRange(region, meses, vista) {
 // Genera cajitas de insight comparando regiones seleccionadas.
 // `higherIsBetter` define si mayor valor = mejor (ingresos) o peor (costos).
 // Cada tarjeta encuentra la región líder vs rezagada + delta.
-function renderCmpInsights(regionesSel, sums) {
+function renderCmpInsights(regionesSel, sums, cfg) {
   const el = document.getElementById('cmpInsights');
   el.innerHTML = '';
 
@@ -597,21 +652,15 @@ function renderCmpInsights(regionesSel, sums) {
     return;
   }
 
-  // KPIs a comparar: key, label, mode ('income' o 'cost'), normalize (siempre pct del revenue)
-  const KPIS = [
-    { key: 'gross_profit', label: 'Gross Profit', mode: 'income', norm: 'pct' },
-    { key: 'gp_sin_iva', label: 'Gross Profit sin IVA', mode: 'income', norm: 'pct' },
-    { key: 'direct_costs', label: 'Direct Costs', mode: 'cost', norm: 'pct' },
-    { key: 'contribution_margin', label: 'Contribution Margin', mode: 'income', norm: 'pct' },
-  ];
+  const KPIS = cfg.insightKPIs;
+  const revenueKey = cfg.revenueKey;
 
   // valor para comparación (respeta la métrica global salvo para NIDs que siempre es abs)
   const valueFor = (region, kpi) => {
     const raw = sums[region][kpi.key];
     if (raw === undefined || raw === null) return null;
-    if (kpi.key === 'invoiced_sales') return raw;
     if (kpi.norm === 'pct') {
-      const rev = sums[region]['gmv_habi'] || 0;
+      const rev = sums[region][revenueKey] || 0;
       if (!rev) return null;
       return raw / rev;
     }
@@ -694,21 +743,23 @@ function renderCmpInsights(regionesSel, sums) {
 }
 
 function renderCmp() {
+  const cfg = cmpSourceConfig();
   const meses = cmpMesesRange();
+  const sourceLabel = state.cmpSource === 'consolidado' ? 'Consolidado (MM + Inmo)' : 'MM';
   document.getElementById('cmpContext').textContent =
-    `${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'MXN 000\'s (con % del Revenue debajo)' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'MXN por NID facturado'}`;
+    `${sourceLabel} · ${state.cmpVista === 'acc' ? 'ACC' : 'Sintético'} · ${cmpMesLabel(meses)} · ${state.cmpMetrica === 'abs' ? 'MXN 000\'s (con % del Revenue debajo)' : state.cmpMetrica === 'pct' ? '% del Revenue de la región' : 'MXN por transacción'}`;
 
-  const regionesSel = state.data.regiones
+  const regionesSel = cfg.data.regiones
     .filter(r => r.key !== 'Total' && state.cmpRegiones.has(r.key))
     .map(r => r.key);
 
   // sumar por región + Total
   const sums = {};
-  for (const r of regionesSel) sums[r] = sumRegionInRange(r, meses, state.cmpVista);
-  sums['Total'] = sumRegionInRange('Total', meses, state.cmpVista);
+  for (const r of regionesSel) sums[r] = sumRegionInRange(r, meses, state.cmpVista, cfg.data);
+  sums['Total'] = sumRegionInRange('Total', meses, state.cmpVista, cfg.data);
 
   // insights (comparaciones entre las regiones seleccionadas)
-  renderCmpInsights(regionesSel, sums);
+  renderCmpInsights(regionesSel, sums, cfg);
 
   // header
   const head = document.getElementById('cmpHead');
@@ -723,15 +774,15 @@ function renderCmp() {
   // en comparativa mostramos SOLO conceptos grandes (kpi / rubro / total),
   // no subcuentas ni grupos
   const BIG_TYPES = new Set(['kpi', 'rubro', 'total']);
-  const structure = state.data.estructura.filter(row =>
+  const structure = cfg.data.estructura.filter(row =>
     (!row.vista || row.vista === state.cmpVista) && BIG_TYPES.has(row.type)
   );
 
   const revenueByRegion = {};
   const nidsByRegion = {};
   for (const r of [...regionesSel, 'Total']) {
-    revenueByRegion[r] = sums[r]['gmv_habi'] || 0;
-    nidsByRegion[r] = sums[r]['invoiced_sales'] || 0;
+    revenueByRegion[r] = sums[r][cfg.revenueKey] || 0;
+    nidsByRegion[r] = sums[r][cfg.nidsKey] || 0;
   }
 
   const applyMetric = (val, region, row) => {
@@ -758,9 +809,9 @@ function renderCmp() {
   };
 
   // Cuando la métrica activa es 'abs', mostrar también el % del Revenue debajo
-  // (mismo patrón que la tabla principal). Base = gmv_habi (con fee incluido).
+  // (mismo patrón que la tabla principal). Base = revenueKey del config.
   const showPctBelow = state.cmpMetrica === 'abs';
-  const pctExcluded = new Set(['invoiced_sales', 'gmv_habi', 'fee_hc100', 'gmv_sin_hc100']);
+  const pctExcluded = cfg.pctExcluded;
   const renderCellValue = (rawVal, val, row, region) => {
     if (val === null || val === undefined) return '—';
     const base = fmtCell(val, row);
@@ -801,8 +852,11 @@ function renderCmp() {
       }
     }
 
-    // Highlight verde para positivos en totales netos (mismo criterio que la tabla principal)
-    const isProfitTotal = row.type === 'total' && row.sign === 'net';
+    // Highlight verde: (a) totales netos genéricos, (b) profitLines del config
+    // (para consolidado: CM MM, CM Inmo, CM Total, Net City Contribution).
+    const isProfitTotal =
+      (row.type === 'total' && row.sign === 'net') ||
+      cfg.profitLines.has(row.key);
 
     for (const r of regionesSel) {
       const raw = sums[r][row.key];
@@ -813,7 +867,8 @@ function renderCmp() {
       if (r === worst) cell.classList.add('worst');
       if (isProfitTotal && val !== null && val > 0) cell.classList.add('positivo-highlight');
       cell.innerHTML = renderCellValue(raw, val, row, r);
-      if (!NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
+      // Drill solo disponible en fuente MM (consolidado no tiene facts por-NID)
+      if (cfg.drillable && !NON_DRILLABLE.has(row.key) && !row.pendiente && val !== null && val !== 0) {
         cell.classList.add('clickable');
         cell.addEventListener('click', () => openCmpDrill(row, r, meses));
       }
@@ -1060,6 +1115,7 @@ function renderConsRegionCtrl() {
 }
 
 function setupConsControls() {
+  if (!state.consData) return;
   document.querySelectorAll('#consVistaCtrl .seg-btn').forEach(b => {
     b.addEventListener('click', () => {
       state.consVista = b.dataset.vista;
@@ -1073,8 +1129,56 @@ function setupConsControls() {
       state.consRango = b.dataset.rango;
       document.querySelectorAll('#consRangoCtrl .seg-btn').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
+      document.getElementById('consYearSubCtrl').hidden = state.consRango !== 'year';
+      document.getElementById('consRangeSubCtrl').hidden = state.consRango !== 'range';
       renderConsolidated();
     });
+  });
+
+  // sub-control: año
+  const yearCtrl = document.getElementById('consYearCtrl');
+  const years = Array.from(new Set(state.consData.meses.map(m => m.slice(0, 4)))).sort();
+  state.consYear = state.consYear || years[years.length - 1];
+  yearCtrl.innerHTML = '';
+  for (const y of years) {
+    const b = document.createElement('button');
+    b.className = 'seg-btn' + (y === state.consYear ? ' active' : '');
+    b.dataset.year = y;
+    b.textContent = y;
+    b.addEventListener('click', () => {
+      state.consYear = y;
+      yearCtrl.querySelectorAll('.seg-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderConsolidated();
+    });
+    yearCtrl.appendChild(b);
+  }
+
+  // sub-control: rango
+  const fromSel = document.getElementById('consRangeFrom');
+  const toSel = document.getElementById('consRangeTo');
+  const opts = state.consData.meses.map(m => `<option value="${m}">${m}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  state.consRangeFrom = state.consRangeFrom || state.consData.meses[0];
+  state.consRangeTo = state.consRangeTo || state.consData.meses[state.consData.meses.length - 1];
+  fromSel.value = state.consRangeFrom;
+  toSel.value = state.consRangeTo;
+  fromSel.addEventListener('change', () => {
+    state.consRangeFrom = fromSel.value;
+    if (state.consRangeFrom > state.consRangeTo) {
+      state.consRangeTo = state.consRangeFrom;
+      toSel.value = state.consRangeTo;
+    }
+    renderConsolidated();
+  });
+  toSel.addEventListener('change', () => {
+    state.consRangeTo = toSel.value;
+    if (state.consRangeTo < state.consRangeFrom) {
+      state.consRangeFrom = state.consRangeTo;
+      fromSel.value = state.consRangeFrom;
+    }
+    renderConsolidated();
   });
 }
 
@@ -1082,6 +1186,12 @@ function consMesesToShow() {
   if (!state.consData) return [];
   const all = state.consData.meses;
   if (state.consRango === 'all') return all;
+  if (state.consRango === 'year') {
+    return all.filter(m => m.startsWith(state.consYear + '-'));
+  }
+  if (state.consRango === 'range') {
+    return all.filter(m => m >= state.consRangeFrom && m <= state.consRangeTo);
+  }
   const n = parseInt(state.consRango, 10);
   return all.slice(-n);
 }

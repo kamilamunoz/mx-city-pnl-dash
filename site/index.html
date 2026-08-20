@@ -131,6 +131,13 @@
 
   <div class="controls">
     <div class="control-group">
+      <label>Fuente</label>
+      <div class="segmented" id="cmpSourceCtrl">
+        <button class="seg-btn active" data-source="mm">MM (solo)</button>
+        <button class="seg-btn" data-source="consolidado">Consolidado MM + Inmo</button>
+      </div>
+    </div>
+    <div class="control-group">
       <label>Vista</label>
       <div class="segmented" id="cmpVistaCtrl">
         <button class="seg-btn active" data-vista="acc">ACC</button>
@@ -207,6 +214,25 @@
           <button class="seg-btn" data-rango="6">Últimos 6</button>
           <button class="seg-btn active" data-rango="12">Últimos 12</button>
           <button class="seg-btn" data-rango="all">Todos</button>
+          <button class="seg-btn" data-rango="year">Por año</button>
+          <button class="seg-btn" data-rango="range">Rango</button>
+        </div>
+
+        <div class="sub-control" id="consYearSubCtrl" hidden>
+          <div class="segmented" id="consYearCtrl"></div>
+        </div>
+
+        <div class="sub-control" id="consRangeSubCtrl" hidden>
+          <div class="range-inputs">
+            <div>
+              <span class="range-lbl">Desde</span>
+              <select id="consRangeFrom"></select>
+            </div>
+            <div>
+              <span class="range-lbl">Hasta</span>
+              <select id="consRangeTo"></select>
+            </div>
+          </div>
         </div>
       </div>
     </div>
