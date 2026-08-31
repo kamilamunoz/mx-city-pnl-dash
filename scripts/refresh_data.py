@@ -360,12 +360,22 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             cuenta_desc = getattr(row, "c_cuenta_descripcion", None) or ""
             filas_row = int(getattr(row, "filas", 1) or 1)
             fk = (tercero, cuenta)
-            cell = corp_facts.setdefault(k, {})
-            if fk in cell:
-                cell[fk]["monto"] += valor
-                cell[fk]["filas"] += filas_row
-            else:
-                cell[fk] = {"cuenta_desc": cuenta_desc, "monto": valor, "filas": filas_row}
+
+            def _upsert(cell_key: tuple[str, str, str]) -> None:
+                cell = corp_facts.setdefault(cell_key, {})
+                if fk in cell:
+                    cell[fk]["monto"] += valor
+                    cell[fk]["filas"] += filas_row
+                else:
+                    cell[fk] = {"cuenta_desc": cuenta_desc, "monto": valor, "filas": filas_row}
+
+            # 1) Fact en (region, mes, key) — región de destino real
+            _upsert(k)
+            # 2) Fact adicional en ("Total", mes, key) para que Total consolide las sub-métricas
+            #    atribuibles por ciudad. `corp_opex_nacional` ya cae directamente en Total (no
+            #    dupllicar) — se salta ese caso.
+            if region != "Total" and key != "corp_opex_nacional":
+                _upsert(("Total", mes_str, key))
 
         if ubic_no_mapeados:
             log.warning("Ubicaciones no mapeadas → corp_opex_nacional: %s", sorted(ubic_no_mapeados))
