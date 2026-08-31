@@ -354,10 +354,18 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             if corp_max_mes is None or mes_str > corp_max_mes:
                 corp_max_mes = mes_str
 
-            # Facts detallados por tercero+cuenta para drill-down
-            tercero = getattr(row, "c_tercero", None) or "(sin tercero)"
-            cuenta = str(getattr(row, "c_cuenta", "") or "")
-            cuenta_desc = getattr(row, "c_cuenta_descripcion", None) or ""
+            # Facts detallados por tercero+cuenta para drill-down.
+            # Sanitize NaN → strings vacíos (pandas trae NaN de columnas STRING nulas y
+            # eso rompe el JSON generado, que el frontend no puede parsear).
+            def _clean(v):
+                if v is None:
+                    return ""
+                if isinstance(v, float) and pd.isna(v):
+                    return ""
+                return str(v)
+            tercero = _clean(getattr(row, "c_tercero", None)) or "(sin tercero)"
+            cuenta = _clean(getattr(row, "c_cuenta", None))
+            cuenta_desc = _clean(getattr(row, "c_cuenta_descripcion", None))
             filas_row = int(getattr(row, "filas", 1) or 1)
             fk = (tercero, cuenta)
 
@@ -651,7 +659,9 @@ def main() -> None:
             "data": nested,
         }
         with open(OUT_CORP_FACTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(corp_facts_payload, f, ensure_ascii=False, separators=(",", ":"))
+            # allow_nan=False para que crashee temprano si un NaN residual sobrevive
+            # el saneo — un NaN en el JSON rompe silenciosamente el fetch en el frontend.
+            json.dump(corp_facts_payload, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         log.info("Escrito → %s (%.1f KB)", OUT_CORP_FACTS_PATH, OUT_CORP_FACTS_PATH.stat().st_size / 1024)
 
 
