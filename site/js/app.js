@@ -46,11 +46,13 @@ const state = {
 const NON_DRILLABLE = new Set(['invoiced_sales', 'fee_hc100']);
 
 // Sub-líneas de Corp OpEx que abren drill-down por tercero (nuevo modal alternativo).
-const CORP_OPEX_DRILLABLE_KEYS = new Set([
+// Incluye el grupo `corp_opex` (que consolida todas las sub-métricas para esa celda).
+const CORP_OPEX_SUB_KEYS = [
   'corp_opex_sales_ops', 'corp_opex_tech', 'corp_opex_prof_fees',
   'corp_opex_courier', 'corp_opex_travel', 'corp_opex_empl_rel',
   'corp_opex_other', 'corp_opex_nacional',
-]);
+];
+const CORP_OPEX_DRILLABLE_KEYS = new Set([...CORP_OPEX_SUB_KEYS, 'corp_opex']);
 
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
@@ -502,10 +504,27 @@ function closeDrill() {
 }
 
 // Drill de Corp OpEx: reusa el drillPanel pero renderiza tabla por tercero.
-// `key` = sub-métrica (ej: 'corp_opex_travel'). `mes` = 'YYYY-MM'. `region` = key región.
+// `key` = sub-métrica (ej: 'corp_opex_travel') o grupo ('corp_opex'). `mes` = 'YYYY-MM'. `region` = key región.
 function openCorpDrill(row, mes, region) {
   if (!state.corpFacts) return;
-  const entries = ((state.corpFacts.data || {})[region] || {})[mes]?.[row.key] || [];
+  const cellData = ((state.corpFacts.data || {})[region] || {})[mes] || {};
+
+  // Si es el grupo `corp_opex`, consolidar TODAS las sub-métricas (+ nacional en Total).
+  // Si es una sub-métrica específica, usar solo esa.
+  let entries = [];
+  if (row.key === 'corp_opex') {
+    for (const subKey of CORP_OPEX_SUB_KEYS) {
+      const subEntries = cellData[subKey] || [];
+      // Etiquetar cada entry con la sub-métrica de origen para trazabilidad
+      const subLabel = (state.consData.estructura.find(r => r.key === subKey) || {}).label || subKey;
+      for (const e of subEntries) {
+        entries.push({ ...e, submetrica: subLabel });
+      }
+    }
+    entries.sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto));
+  } else {
+    entries = cellData[row.key] || [];
+  }
   const total = entries.reduce((s, e) => s + (e.monto || 0), 0);
 
   const regionLabel = (state.consData.regiones.find(r => r.key === region) || {}).label || region;
@@ -522,13 +541,17 @@ function openCorpDrill(row, mes, region) {
   if (nidTable) nidTable.style.display = 'none';
   const oldCorpTable = body.querySelector('.drill-corp-table');
   if (oldCorpTable) oldCorpTable.remove();
+  const isGroup = row.key === 'corp_opex';
   const table = document.createElement('table');
   table.className = 'drill-table drill-corp-table';
+  const subColHeader = isGroup ? '<th style="text-align:left">Sub-línea</th>' : '';
+  const colspan = isGroup ? 8 : 7;
   table.innerHTML = `
     <thead>
       <tr>
         <th style="text-align:left">#</th>
         <th style="text-align:left">Tercero</th>
+        ${subColHeader}
         <th style="text-align:left">Cuenta</th>
         <th style="text-align:left">Descripción</th>
         <th style="text-align:right"># filas</th>
@@ -541,15 +564,17 @@ function openCorpDrill(row, mes, region) {
   body.appendChild(table);
   const tbody = table.querySelector('tbody');
   if (entries.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="drill-empty">Sin terceros en esta celda.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${colspan}" class="drill-empty">Sin terceros en esta celda.</td></tr>`;
   } else {
     entries.forEach((e, i) => {
       const tr = document.createElement('tr');
       const pct = total !== 0 ? (e.monto / total * 100) : 0;
       const cleanDesc = (e.cuenta_desc || '').replace(/^\d+\.\s*Cuenta:\s*\d+\s*/, '').replace(/^\d+\.\s*Explicación\s*Other:\s*/, '');
+      const subCell = isGroup ? `<td class="small">${e.submetrica || ''}</td>` : '';
       tr.innerHTML = `
         <td>${i + 1}</td>
         <td>${e.tercero || '(sin tercero)'}</td>
+        ${subCell}
         <td>${e.cuenta || ''}</td>
         <td class="small">${cleanDesc}</td>
         <td style="text-align:right">${e.filas}</td>
@@ -1384,8 +1409,12 @@ function renderConsolidated() {
 
       // Drill-down por tercero para Corp OpEx
       if (CORP_OPEX_DRILLABLE_KEYS.has(row.key) && val !== null && val !== 0 && state.corpFacts) {
-        const hasFacts = ((state.corpFacts.data || {})[state.consRegion] || {})[m]?.[row.key];
-        if (hasFacts && hasFacts.length > 0) {
+        const cellData = ((state.corpFacts.data || {})[state.consRegion] || {})[m] || {};
+        // Grupo: hay data si cualquier sub-métrica trae terceros. Sub-línea: check directo.
+        const hasFacts = row.key === 'corp_opex'
+          ? CORP_OPEX_SUB_KEYS.some(k => (cellData[k] || []).length > 0)
+          : (cellData[row.key] || []).length > 0;
+        if (hasFacts) {
           cellEl.classList.add('clickable');
           cellEl.title = 'Clic para ver desglose por tercero';
           cellEl.addEventListener('click', () => openCorpDrill(row, m, state.consRegion));
