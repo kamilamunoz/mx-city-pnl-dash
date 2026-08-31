@@ -51,17 +51,23 @@ INMO_JSON_PATH = Path.home() / "Finanzas-Habi" / "mx-inmo-pnl-dash" / "site" / "
 BLT_DASHBOARD_DATA = Path.home() / "Finanzas-Habi" / "blt-dashboard" / "data"
 FX_MXN_PER_USD = 18.5  # el mismo escalar exacto que usa Danibot en Seguimiento Terceros
 
-# Rent MX — mapeo vendor → destino (según docs/agrupaciones_por_ciudad.md de Danibot):
+# Rent MX — mapeo vendor → destino (según docs/agrupaciones_por_ciudad.md de Danibot).
+# Actualización 2026-08-31 (commit f25507c blt-dashboard):
 # - "PUBLICO REFORMA 333" (~71% Rent MX) → CDMX → fusionado a EDO MEX (REGION_ALIASES)
 # - "ALDEA COWORKING" (coworking) → NUEVO LEON
-# - "Wework méxico Co S de RL de CV" → NL+JAL no separable → clave rent_wework_nl_jal en Total
+# - "Wework méxico Co S de RL de CV" → JALISCO (supuesto reversible de Kamila; antes only_total NL+JAL)
+# - "MANUEL GUTIERREZ GONZALEZ" → QUERETARO (confirmado 31-ago-2026, arrendador sede QRO)
 # - todo lo demás → rent_nacional en Total (servicios sin ciudad: AT&T, telecoms, papelería, etc.)
 # El mapeo vendor→region canónica se resuelve luego contra REGION_ALIASES del pipeline.
 RENT_MX_VENDOR_TO_REGION = {
     "PUBLICO REFORMA 333": "CDMX",
     "ALDEA COWORKING": "NUEVO LEON",
+    "Wework méxico Co S de RL de CV": "JALISCO",
+    "MANUEL GUTIERREZ GONZALEZ": "QUERETARO",
 }
-RENT_MX_VENDOR_WEWORK = "Wework méxico Co S de RL de CV"
+# LEGACY: se conserva por compat con el schema `rent_wework_nl_jal` (bucket only_total).
+# Ya no se usa: WeWork ahora se atribuye a JALISCO directamente en RENT_MX_VENDOR_TO_REGION.
+RENT_MX_VENDOR_WEWORK = "__DISABLED__"
 
 # Mapeo c_ubicacion (bet_data_p2) → region canónica MX (post-REGION_ALIASES)
 CORP_OPEX_UBIC_TO_REGION = {
