@@ -39,7 +39,7 @@ const state = {
   consYear: null,
   consRangeFrom: null,
   consRangeTo: null,
-  consExpanded: new Set(['local_opex']),  // por default expandido para exponer Corp OpEx clickeable
+  consExpanded: new Set(['local_opex', 'payroll_local']),  // por default expandidos: Corp OpEx clickeable + Headcount visible
 };
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
