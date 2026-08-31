@@ -165,6 +165,33 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
     meta["payroll_cobertura_hasta"] = payroll_max_mes
     meta["payroll_regiones_sin_sede"] = regiones_sin_sede
 
+    # ── Headcount (Aline/Lis, snapshot opcional) ─────────────────────
+    # Campo `headcount_mensual: {mes: int}` por bloque region. Si falta, se skipea.
+    # Se emite como fila informativa `headcount_local` (no suma a local_opex).
+    hc_by_region_mes: dict[tuple[str, str], int] = {}
+    hc_max_mes: str | None = None
+    for block in payroll["mx"]:
+        region_final = _alias_region(block["city_pnl"])
+        hc_dict = block.get("headcount_mensual") or {}
+        for mes, hc in hc_dict.items():
+            if hc is None:
+                continue
+            hc_by_region_mes[(region_final, mes)] = (
+                hc_by_region_mes.get((region_final, mes), 0) + int(hc)
+            )
+            if hc_max_mes is None or mes > hc_max_mes:
+                hc_max_mes = mes
+    for (region, mes), hc in hc_by_region_mes.items():
+        rows.append({"region": region, "mes": mes, "key": "headcount_local", "valor": float(hc)})
+    total_hc_by_mes: dict[str, int] = {}
+    for (_r, mes), hc in hc_by_region_mes.items():
+        total_hc_by_mes[mes] = total_hc_by_mes.get(mes, 0) + hc
+    for mes, hc in total_hc_by_mes.items():
+        rows.append({"region": "Total", "mes": mes, "key": "headcount_local", "valor": float(hc)})
+    if hc_max_mes is not None:
+        meta["headcount_cobertura_hasta"] = hc_max_mes
+        meta["headcount_owner"] = payroll["_meta"].get("headcount_owner", "Aline/Lis")
+
     # ── Rent (Danibot) ────────────────────────────────────────────────
     opex = json.loads(opex_path.read_text(encoding="utf-8"))
     meta["rent_generado_en"] = opex["meta"].get("generated_at")

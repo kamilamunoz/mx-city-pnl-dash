@@ -1296,7 +1296,9 @@ function renderConsolidated() {
       }
 
       if (row.extern && val === null) {
-        cellEl.title = 'Sin dato en fuente externa (Lis/Danibot/BQ) para este mes';
+        cellEl.title = row.key === 'headcount_local'
+          ? 'Sin dato de headcount (Aline/Lis) para este mes'
+          : 'Sin dato en fuente externa (Lis/Danibot/BQ) para este mes';
       }
 
       tr.appendChild(cellEl);
@@ -1309,6 +1311,7 @@ function renderConsolidated() {
   const inmoMeta = ((state.consData.meta || {}).inmo) || {};
   const bits = [];
   if (lo.payroll_cobertura_hasta) bits.push(`payroll hasta ${lo.payroll_cobertura_hasta} (Lis)`);
+  if (lo.headcount_cobertura_hasta) bits.push(`HC hasta ${lo.headcount_cobertura_hasta} (${lo.headcount_owner || 'Aline/Lis'})`);
   if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_mxn_per_usd})`);
   if (lo.marketing_cobertura_hasta) bits.push(`marketing hasta ${lo.marketing_cobertura_hasta} (BQ)`);
   if (inmoMeta.inmo_generado_en) bits.push(`Inmo generado ${inmoMeta.inmo_generado_en.slice(0,10)}`);

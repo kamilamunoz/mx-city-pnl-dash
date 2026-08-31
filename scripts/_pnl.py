@@ -201,6 +201,8 @@ PNL_STRUCTURE_CONSOLIDATED = [
 
     # ── local OpEx (mismo bloque que antes, ahora aquí en el consolidado) ──
     {"key": "payroll_local", "label": "Payroll local", "parent": "local_opex", "type": "subcuenta", "sign": "cost", "extern": True},
+    {"key": "headcount_local", "label": "Headcount local", "parent": "payroll_local", "type": "informativo", "sign": "count", "extern": True,
+     "note": "HC atribuible a la ciudad al cierre del mes (snapshot Aline/Lis). Informativo — no afecta local_opex."},
     {"key": "rent_atribuible", "label": "Rent (atribuible por ciudad)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True},
     {"key": "rent_wework_nl_jal", "label": "Rent NL + JAL (WeWork · no separable)", "parent": "rent", "type": "subcuenta", "sign": "cost", "extern": True, "only_total": True,
      "note": "WeWork agrupa las oficinas de Monterrey (NL) y Guadalajara (JAL) bajo un solo c_tercero en OPEX. El grano de la fuente (proveedor × mes × país) no permite separar el gasto entre las dos ciudades — se muestra combinado solo en el consolidado."},
