@@ -89,12 +89,18 @@ async function loadData() {
     fetch(`data/kpi_pnl.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_facts.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_consolidated.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
-    fetch(`data/kpi_pnl_corp_facts.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`data/kpi_pnl_corp_facts.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(e => { console.error('[CorpDrill] fetch corp_facts failed:', e); return null; }),
   ]);
   state.data = pnl;
   state.facts = facts;
   state.consData = cons;
   state.corpFacts = corpFacts;
+  console.log('[CorpDrill] loaded:', {
+    consData: !!cons,
+    corpFacts: !!corpFacts,
+    corpRegions: corpFacts ? Object.keys(corpFacts.data || {}) : [],
+    corpCoverage: corpFacts?.meta?.cobertura_hasta,
+  });
 
   // por default, seleccionar todas las regiones reales (sin Total) para comparativa
   state.cmpRegiones = new Set(
@@ -1408,16 +1414,28 @@ function renderConsolidated() {
       }
 
       // Drill-down por tercero para Corp OpEx
-      if (CORP_OPEX_DRILLABLE_KEYS.has(row.key) && val !== null && val !== 0 && state.corpFacts) {
-        const cellData = ((state.corpFacts.data || {})[state.consRegion] || {})[m] || {};
-        // Grupo: hay data si cualquier sub-métrica trae terceros. Sub-línea: check directo.
-        const hasFacts = row.key === 'corp_opex'
-          ? CORP_OPEX_SUB_KEYS.some(k => (cellData[k] || []).length > 0)
-          : (cellData[row.key] || []).length > 0;
-        if (hasFacts) {
-          cellEl.classList.add('clickable');
-          cellEl.title = 'Clic para ver desglose por tercero';
-          cellEl.addEventListener('click', () => openCorpDrill(row, m, state.consRegion));
+      if (CORP_OPEX_DRILLABLE_KEYS.has(row.key) && val !== null && val !== 0) {
+        if (!state.corpFacts) {
+          cellEl.title = 'DEBUG: state.corpFacts es null (fetch falló). F12 → Network → buscar kpi_pnl_corp_facts.json';
+          cellEl.style.outline = '2px dashed orange';
+        } else {
+          const cellData = ((state.corpFacts.data || {})[state.consRegion] || {})[m] || {};
+          const hasFacts = row.key === 'corp_opex'
+            ? CORP_OPEX_SUB_KEYS.some(k => (cellData[k] || []).length > 0)
+            : (cellData[row.key] || []).length > 0;
+          if (hasFacts) {
+            cellEl.classList.add('clickable');
+            cellEl.style.outline = '2px solid #ff00ff';  // DEBUG: magenta = drill disponible
+            cellEl.title = `Clic para ver desglose por tercero (${state.consRegion}/${m}/${row.key})`;
+            cellEl.addEventListener('click', (ev) => {
+              console.log('[CorpDrill] click', {region: state.consRegion, mes: m, key: row.key});
+              try { openCorpDrill(row, m, state.consRegion); }
+              catch (e) { console.error('[CorpDrill] error:', e); alert('Error abriendo drill: ' + e.message); }
+            });
+          } else {
+            cellEl.title = `DEBUG: sin facts en ${state.consRegion}/${m}/${row.key}. corpFacts tiene: ${Object.keys(state.corpFacts.data || {}).join(', ')}`;
+            cellEl.style.outline = '2px dashed cyan';  // DEBUG: no data en corpFacts para esta celda
+          }
         }
       }
 
