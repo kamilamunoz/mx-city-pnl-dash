@@ -41,6 +41,7 @@ RAW_CORP_OPEX_PATH = REPO_ROOT / "data" / "raw_corp_opex_mx.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
+OUT_CORP_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_corp_facts.json"
 
 # JSON del dashboard Inmo MX (repo hermano). Se lee para el consolidado.
 INMO_JSON_PATH = Path.home() / "Finanzas-Habi" / "mx-inmo-pnl-dash" / "site" / "data" / "kpi_pnl.json"
@@ -318,6 +319,9 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
     # ── OpEx corporativo (bet_data_p2) ────────────────────────────────
     # Valores en MXN absoluto (signo negativo = costo, mismo signo de bet_data_p2).
     corp_max_mes: str | None = None
+    # facts[(region, mes, key)] → dict[(tercero, cuenta) → {'cuenta_desc', 'monto', 'filas'}]
+    # se acumula por tercero+cuenta para permitir drill-down en el frontend.
+    corp_facts: dict[tuple[str, str, str], dict[tuple[str, str], dict]] = {}
     if RAW_CORP_OPEX_PATH.exists():
         corp_df = pd.read_parquet(RAW_CORP_OPEX_PATH)
         meta["corp_opex_filas"] = int(len(corp_df))
@@ -350,6 +354,19 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             if corp_max_mes is None or mes_str > corp_max_mes:
                 corp_max_mes = mes_str
 
+            # Facts detallados por tercero+cuenta para drill-down
+            tercero = getattr(row, "c_tercero", None) or "(sin tercero)"
+            cuenta = str(getattr(row, "c_cuenta", "") or "")
+            cuenta_desc = getattr(row, "c_cuenta_descripcion", None) or ""
+            filas_row = int(getattr(row, "filas", 1) or 1)
+            fk = (tercero, cuenta)
+            cell = corp_facts.setdefault(k, {})
+            if fk in cell:
+                cell[fk]["monto"] += valor
+                cell[fk]["filas"] += filas_row
+            else:
+                cell[fk] = {"cuenta_desc": cuenta_desc, "monto": valor, "filas": filas_row}
+
         if ubic_no_mapeados:
             log.warning("Ubicaciones no mapeadas → corp_opex_nacional: %s", sorted(ubic_no_mapeados))
 
@@ -363,6 +380,7 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             rows.append({"region": "Total", "mes": mes, "key": key, "valor": val})
 
         meta["corp_opex_cobertura_hasta"] = corp_max_mes
+        meta["_corp_facts"] = corp_facts  # se extrae en main() para escribir kpi_pnl_corp_facts.json
     else:
         log.warning("data/raw_corp_opex_mx.parquet no existe — corre `make raw_corp`. OpEx Corp = 0.")
         meta["corp_opex_cobertura_hasta"] = None
@@ -578,6 +596,10 @@ def main() -> None:
         json.dump(facts_payload, f, ensure_ascii=False, separators=(",", ":"))
     log.info("Escrito → %s (%.1f KB)", OUT_FACTS_PATH, OUT_FACTS_PATH.stat().st_size / 1024)
 
+    # Extraer facts de Corp OpEx del meta ANTES de pasar meta al writer del
+    # consolidated (el JSON writer no soporta tuples como keys).
+    corp_facts = local_opex_meta.pop("_corp_facts", None) if local_opex_meta else None
+
     # ── kpi_pnl_consolidated.json: waterfall MM + Inmo + Local OpEx ──
     log.info("Construyendo consolidado MM + Inmo ...")
     _write_consolidated(
@@ -589,6 +611,38 @@ def main() -> None:
         local_opex_meta=local_opex_meta,
         inmo_meta=inmo_meta,
     )
+
+    # ── kpi_pnl_corp_facts.json: drill-down por tercero para Corp OpEx ──
+    if corp_facts is not None:
+        log.info("Construyendo Corp OpEx facts por tercero ...")
+        # Estructura: { region: { mes: { key_metrica: [ {tercero, cuenta, cuenta_desc, monto, filas} ] } } }
+        nested: dict = {}
+        for (region, mes, key), cell in corp_facts.items():
+            entries = []
+            for (tercero, cuenta), agg in cell.items():
+                entries.append({
+                    "tercero": tercero,
+                    "cuenta": cuenta,
+                    "cuenta_desc": agg["cuenta_desc"],
+                    "monto": round(agg["monto"], 2),
+                    "filas": agg["filas"],
+                })
+            entries.sort(key=lambda e: abs(e["monto"]), reverse=True)
+            nested.setdefault(region, {}).setdefault(mes, {})[key] = entries
+
+        corp_facts_payload = {
+            "meta": {
+                "generado_en": datetime.now().isoformat(timespec="seconds"),
+                "fuente": "papyrus-delivery-data.corp_gov_global.bet_data_p2",
+                "descripcion": "Drill-down por tercero/cuenta para líneas de Corp OpEx del consolidado MX. Se agrupa por (region, mes, sub-metrica) → lista de terceros. Ordenado por |monto| desc.",
+                "currency": "MXN",
+                "cobertura_hasta": local_opex_meta.get("corp_opex_cobertura_hasta"),
+            },
+            "data": nested,
+        }
+        with open(OUT_CORP_FACTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(corp_facts_payload, f, ensure_ascii=False, separators=(",", ":"))
+        log.info("Escrito → %s (%.1f KB)", OUT_CORP_FACTS_PATH, OUT_CORP_FACTS_PATH.stat().st_size / 1024)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ const state = {
   data: null,          // kpi_pnl.json
   facts: null,         // kpi_pnl_facts.json
   consData: null,      // kpi_pnl_consolidated.json (MM + Inmo + Local OpEx)
+  corpFacts: null,     // kpi_pnl_corp_facts.json (drill de OpEx Corp por tercero)
   // último drill abierto (para el botón de reporte)
   lastDrill: null,     // { row, contextLabel, alertItems, total, vista }
   // tab 1: P&L por región
@@ -43,6 +44,13 @@ const state = {
 
 // líneas NO clickables (son sumas o counts, no tienen NIDs propios)
 const NON_DRILLABLE = new Set(['invoiced_sales', 'fee_hc100']);
+
+// Sub-líneas de Corp OpEx que abren drill-down por tercero (nuevo modal alternativo).
+const CORP_OPEX_DRILLABLE_KEYS = new Set([
+  'corp_opex_sales_ops', 'corp_opex_tech', 'corp_opex_prof_fees',
+  'corp_opex_courier', 'corp_opex_travel', 'corp_opex_empl_rel',
+  'corp_opex_other', 'corp_opex_nacional',
+]);
 
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
@@ -75,14 +83,16 @@ function setupLogin() {
 
 // ─── data load ────────────────────────────────────────────────────────
 async function loadData() {
-  const [pnl, facts, cons] = await Promise.all([
+  const [pnl, facts, cons, corpFacts] = await Promise.all([
     fetch(`data/kpi_pnl.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_facts.json?v=${Date.now()}`).then(r => r.json()),
     fetch(`data/kpi_pnl_consolidated.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`data/kpi_pnl_corp_facts.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   state.data = pnl;
   state.facts = facts;
   state.consData = cons;
+  state.corpFacts = corpFacts;
 
   // por default, seleccionar todas las regiones reales (sin Total) para comparativa
   state.cmpRegiones = new Set(
@@ -394,6 +404,13 @@ function openDrill(row, mes) {
   const colIdx = facts.columnas.indexOf(row.key);
   if (colIdx < 0) return;
 
+  // Restaurar tabla NID + limpiar tabla Corp si quedó de un drill anterior
+  const body = document.querySelector('.drill-body');
+  const nidTable = body.querySelector('.drill-table:not(.drill-corp-table)');
+  if (nidTable) nidTable.style.display = '';
+  const corpTable = body.querySelector('.drill-corp-table');
+  if (corpTable) corpTable.remove();
+
   // Base de % por-NID = gmv_habi (con fee HC100 incluido).
   const gmvIdx = facts.columnas.indexOf('gmv_habi');
 
@@ -482,6 +499,69 @@ function openDrill(row, mes) {
 function closeDrill() {
   document.getElementById('drillOverlay').hidden = true;
   document.getElementById('drillPanel').hidden = true;
+}
+
+// Drill de Corp OpEx: reusa el drillPanel pero renderiza tabla por tercero.
+// `key` = sub-métrica (ej: 'corp_opex_travel'). `mes` = 'YYYY-MM'. `region` = key región.
+function openCorpDrill(row, mes, region) {
+  if (!state.corpFacts) return;
+  const entries = ((state.corpFacts.data || {})[region] || {})[mes]?.[row.key] || [];
+  const total = entries.reduce((s, e) => s + (e.monto || 0), 0);
+
+  const regionLabel = (state.consData.regiones.find(r => r.key === region) || {}).label || region;
+  document.getElementById('drillContext').textContent = `${regionLabel} · ${mes}`;
+  document.getElementById('drillTitle').textContent = row.label;
+  document.getElementById('drillTotal').innerHTML =
+    `Total: <b>${fmt(total, false)}</b> MXN · ${entries.length} tercero${entries.length === 1 ? '' : 's'}`;
+  document.getElementById('drillSummary').innerHTML = '';
+  document.getElementById('drillActions').hidden = true;
+
+  // Ocultar tabla NID original y (re-)crear tabla Corp
+  const body = document.querySelector('.drill-body');
+  const nidTable = body.querySelector('.drill-table:not(.drill-corp-table)');
+  if (nidTable) nidTable.style.display = 'none';
+  const oldCorpTable = body.querySelector('.drill-corp-table');
+  if (oldCorpTable) oldCorpTable.remove();
+  const table = document.createElement('table');
+  table.className = 'drill-table drill-corp-table';
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th style="text-align:left">#</th>
+        <th style="text-align:left">Tercero</th>
+        <th style="text-align:left">Cuenta</th>
+        <th style="text-align:left">Descripción</th>
+        <th style="text-align:right"># filas</th>
+        <th style="text-align:right">Monto (MXN)</th>
+        <th style="text-align:right">% del total</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  body.appendChild(table);
+  const tbody = table.querySelector('tbody');
+  if (entries.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="drill-empty">Sin terceros en esta celda.</td></tr>`;
+  } else {
+    entries.forEach((e, i) => {
+      const tr = document.createElement('tr');
+      const pct = total !== 0 ? (e.monto / total * 100) : 0;
+      const cleanDesc = (e.cuenta_desc || '').replace(/^\d+\.\s*Cuenta:\s*\d+\s*/, '').replace(/^\d+\.\s*Explicación\s*Other:\s*/, '');
+      tr.innerHTML = `
+        <td>${i + 1}</td>
+        <td>${e.tercero || '(sin tercero)'}</td>
+        <td>${e.cuenta || ''}</td>
+        <td class="small">${cleanDesc}</td>
+        <td style="text-align:right">${e.filas}</td>
+        <td style="text-align:right">${fmt(e.monto, false)}</td>
+        <td style="text-align:right">${pct.toFixed(1)}%</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('drillOverlay').hidden = false;
+  document.getElementById('drillPanel').hidden = false;
 }
 
 function setupDrill() {
@@ -1300,6 +1380,16 @@ function renderConsolidated() {
         cellEl.title = row.key === 'headcount_local'
           ? 'Sin dato de headcount (Aline/Lis) para este mes'
           : 'Sin dato en fuente externa (Lis/Danibot/BQ) para este mes';
+      }
+
+      // Drill-down por tercero para Corp OpEx
+      if (CORP_OPEX_DRILLABLE_KEYS.has(row.key) && val !== null && val !== 0 && state.corpFacts) {
+        const hasFacts = ((state.corpFacts.data || {})[state.consRegion] || {})[m]?.[row.key];
+        if (hasFacts && hasFacts.length > 0) {
+          cellEl.classList.add('clickable');
+          cellEl.title = 'Clic para ver desglose por tercero';
+          cellEl.addEventListener('click', () => openCorpDrill(row, m, state.consRegion));
+        }
       }
 
       tr.appendChild(cellEl);
