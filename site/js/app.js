@@ -366,11 +366,12 @@ function renderTable() {
   if (pend.length) {
     notas.push(`<span style="color:var(--warn)">⚠</span> Líneas pendientes: <b>${pend.join(', ')}</b>.`);
   }
-  if (localOpexMeta.payroll_cobertura_hasta || localOpexMeta.rent_cobertura_hasta || localOpexMeta.marketing_cobertura_hasta) {
+  if (localOpexMeta.payroll_cobertura_hasta || localOpexMeta.rent_cobertura_hasta || localOpexMeta.marketing_cobertura_hasta || localOpexMeta.corp_opex_cobertura_hasta) {
     const bits = [];
     if (localOpexMeta.payroll_cobertura_hasta) bits.push(`payroll hasta ${localOpexMeta.payroll_cobertura_hasta} (Lis)`);
     if (localOpexMeta.rent_cobertura_hasta) bits.push(`rent hasta ${localOpexMeta.rent_cobertura_hasta} (Danibot, FX ${localOpexMeta.fx_mxn_per_usd})`);
     if (localOpexMeta.marketing_cobertura_hasta) bits.push(`marketing hasta ${localOpexMeta.marketing_cobertura_hasta} (BQ · FX ${localOpexMeta.fx_mxn_per_usd})`);
+    if (localOpexMeta.corp_opex_cobertura_hasta) bits.push(`corp opex hasta ${localOpexMeta.corp_opex_cobertura_hasta} (bet_data_p2)`);
     notas.push(`<span style="color:var(--muted)">ⓘ</span> Local OpEx: ${bits.join(' · ')}. Meses posteriores = '—'.`);
   }
   document.getElementById('pendienteNota').innerHTML = notas.join('<br>');
@@ -1314,6 +1315,7 @@ function renderConsolidated() {
   if (lo.headcount_cobertura_hasta) bits.push(`HC hasta ${lo.headcount_cobertura_hasta} (${lo.headcount_owner || 'Aline/Lis'})`);
   if (lo.rent_cobertura_hasta) bits.push(`rent hasta ${lo.rent_cobertura_hasta} (Danibot, FX ${lo.fx_mxn_per_usd})`);
   if (lo.marketing_cobertura_hasta) bits.push(`marketing hasta ${lo.marketing_cobertura_hasta} (BQ)`);
+  if (lo.corp_opex_cobertura_hasta) bits.push(`corp opex hasta ${lo.corp_opex_cobertura_hasta} (bet_data_p2)`);
   if (inmoMeta.inmo_generado_en) bits.push(`Inmo generado ${inmoMeta.inmo_generado_en.slice(0,10)}`);
   document.getElementById('consNota').innerHTML =
     bits.length ? `<span style="color:var(--muted)">ⓘ</span> ${bits.join(' · ')}. Meses posteriores = '—'.` : '';

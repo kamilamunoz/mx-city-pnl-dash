@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_PATH = REPO_ROOT / "data" / "raw_apartment_mx.parquet"
 RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_mx.parquet"
+RAW_CORP_OPEX_PATH = REPO_ROOT / "data" / "raw_corp_opex_mx.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
@@ -61,6 +62,29 @@ RENT_MX_VENDOR_TO_REGION = {
     "ALDEA COWORKING": "NUEVO LEON",
 }
 RENT_MX_VENDOR_WEWORK = "Wework méxico Co S de RL de CV"
+
+# Mapeo c_ubicacion (bet_data_p2) → region canónica MX (post-REGION_ALIASES)
+CORP_OPEX_UBIC_TO_REGION = {
+    "CIUDAD DE MEXICO": "CDMX",       # CDMX → EDO MEX via REGION_ALIASES
+    "VALLE DE MEXICO": "CDMX",         # idem
+    "GUADALAJARA": "JALISCO",
+    "MONTERREY": "NUEVO LEON",
+    "GUANAJUATO": "GUANAJUATO",
+    "QUERETARO": "QUERETARO",
+    # `GLOBAL MEX` y `MÉXICO` → bucket nacional (only_total)
+}
+CORP_OPEX_NACIONAL_UBIC = {"GLOBAL MEX", "MÉXICO"}
+
+# m_metrica → fact_key en el schema consolidado
+CORP_OPEX_METRIC_TO_KEY = {
+    "03. Sales & Ops": "corp_opex_sales_ops",
+    "04. Tech": "corp_opex_tech",
+    "06. Professional fees": "corp_opex_prof_fees",
+    "07. Courier and Transportation": "corp_opex_courier",
+    "08. Travel Expenses": "corp_opex_travel",
+    "09. Employee Relations": "corp_opex_empl_rel",
+    "10. Other - Local Expenses": "corp_opex_other",
+}
 
 
 def _alias_region(region: str) -> str:
@@ -285,6 +309,58 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
         log.warning("data/raw_marketing_mx.parquet no existe — corre `make raw_mkt`. Marketing = 0.")
         meta["marketing_cobertura_hasta"] = None
 
+    # ── OpEx corporativo (bet_data_p2) ────────────────────────────────
+    # Valores en MXN absoluto (signo negativo = costo, mismo signo de bet_data_p2).
+    corp_max_mes: str | None = None
+    if RAW_CORP_OPEX_PATH.exists():
+        corp_df = pd.read_parquet(RAW_CORP_OPEX_PATH)
+        meta["corp_opex_filas"] = int(len(corp_df))
+
+        corp_acum: dict[tuple[str, str, str], float] = {}
+        ubic_no_mapeados: set[str] = set()
+        for row in corp_df.itertuples():
+            metric = row.m_metrica
+            fact_key = CORP_OPEX_METRIC_TO_KEY.get(metric)
+            if not fact_key:
+                continue
+
+            ubic = row.c_ubicacion
+            mes_str = pd.to_datetime(row.mes).strftime("%Y-%m")
+            valor = float(row.actuals_mxn)
+
+            if ubic in CORP_OPEX_UBIC_TO_REGION:
+                region = _alias_region(CORP_OPEX_UBIC_TO_REGION[ubic])
+                key = fact_key
+            elif ubic in CORP_OPEX_NACIONAL_UBIC or ubic is None:
+                region = "Total"
+                key = "corp_opex_nacional"
+            else:
+                ubic_no_mapeados.add(ubic)
+                region = "Total"
+                key = "corp_opex_nacional"
+
+            k = (region, mes_str, key)
+            corp_acum[k] = corp_acum.get(k, 0.0) + valor
+            if corp_max_mes is None or mes_str > corp_max_mes:
+                corp_max_mes = mes_str
+
+        if ubic_no_mapeados:
+            log.warning("Ubicaciones no mapeadas → corp_opex_nacional: %s", sorted(ubic_no_mapeados))
+
+        total_corp_by_metric_mes: dict[tuple[str, str], float] = {}
+        for (region, mes, key), val in corp_acum.items():
+            rows.append({"region": region, "mes": mes, "key": key, "valor": val})
+            if key in CORP_OPEX_METRIC_TO_KEY.values() and region != "Total":
+                total_corp_by_metric_mes[(key, mes)] = total_corp_by_metric_mes.get((key, mes), 0.0) + val
+
+        for (key, mes), val in total_corp_by_metric_mes.items():
+            rows.append({"region": "Total", "mes": mes, "key": key, "valor": val})
+
+        meta["corp_opex_cobertura_hasta"] = corp_max_mes
+    else:
+        log.warning("data/raw_corp_opex_mx.parquet no existe — corre `make raw_corp`. OpEx Corp = 0.")
+        meta["corp_opex_cobertura_hasta"] = None
+
     # Backfill: para (region, mes) donde hay payroll pero no rent_atribuible,
     # emitir rent_atribuible=0 para que local_opex pueda computarse.
     regions_with_rent_atr: set[tuple[str, str]] = {
@@ -415,14 +491,15 @@ def main() -> None:
 
     # Local OpEx e Inmo se usan SOLO para el consolidado (no para el waterfall MM,
     # que ahora cierra en Contribution Margin). Sirven a ambas líneas de negocio.
-    log.info("Cargando Local OpEx (payroll Lis + rent Danibot + marketing BQ) ...")
+    log.info("Cargando Local OpEx (payroll Lis + rent Danibot + marketing BQ + corp opex bet) ...")
     local_opex_df, local_opex_meta = _load_local_opex_mx()
     if local_opex_df is not None:
-        log.info("Local OpEx: %d filas, payroll hasta %s, rent hasta %s, marketing hasta %s",
+        log.info("Local OpEx: %d filas, payroll hasta %s, rent hasta %s, marketing hasta %s, corp opex hasta %s",
                  len(local_opex_df),
                  local_opex_meta.get("payroll_cobertura_hasta"),
                  local_opex_meta.get("rent_cobertura_hasta"),
-                 local_opex_meta.get("marketing_cobertura_hasta"))
+                 local_opex_meta.get("marketing_cobertura_hasta"),
+                 local_opex_meta.get("corp_opex_cobertura_hasta"))
 
     log.info("Cargando Inmo MX (JSON de mx-inmo-pnl-dash) ...")
     inmo_by_vista, inmo_meta = _load_inmo_mx()
