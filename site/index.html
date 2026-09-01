@@ -209,6 +209,14 @@
 
     <div class="controls-right">
       <div class="control-group">
+        <label>Vista</label>
+        <div class="segmented" id="consVistaModeCtrl">
+          <button class="seg-btn active" data-vista-mode="temporal">Serie temporal</button>
+          <button class="seg-btn" data-vista-mode="comparativa">Comparativa</button>
+        </div>
+      </div>
+
+      <div class="control-group" id="consRangoWrap">
         <label>Meses a mostrar</label>
         <div class="segmented" id="consRangoCtrl">
           <button class="seg-btn" data-rango="6">Últimos 6</button>
@@ -231,6 +239,25 @@
             <div>
               <span class="range-lbl">Hasta</span>
               <select id="consRangeTo"></select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group" id="consCompareWrap" hidden>
+        <label>Comparar</label>
+        <div class="segmented" id="consCompareModeCtrl">
+          <button class="seg-btn active" data-compare-mode="MoM">MoM</button>
+          <button class="seg-btn" data-compare-mode="YoY">YoY</button>
+          <button class="seg-btn" data-compare-mode="QoQ">QoQ</button>
+          <button class="seg-btn" data-compare-mode="YTD">YTD</button>
+        </div>
+
+        <div class="sub-control">
+          <div class="range-inputs">
+            <div>
+              <span class="range-lbl">Base</span>
+              <select id="consCompareBase"></select>
             </div>
           </div>
         </div>
@@ -291,6 +318,6 @@
   </div>
 </aside>
 
-<script src="js/app.js?v=2026-09-01-facturify-split"></script>
+<script src="js/app.js?v=2026-09-01-comparativa"></script>
 </body>
 </html>
