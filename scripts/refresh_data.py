@@ -53,21 +53,30 @@ BLT_DASHBOARD_DATA = Path.home() / "Finanzas-Habi" / "blt-dashboard" / "data"
 FX_MXN_PER_USD = 18.5  # el mismo escalar exacto que usa Danibot en Seguimiento Terceros
 
 # Rent MX — mapeo vendor → destino (según docs/agrupaciones_por_ciudad.md de Danibot).
-# Actualización 2026-08-31 (commit f25507c blt-dashboard):
+# Actualización 2026-08-31 v2 (commits 96ded14 + e9f2dd2 blt-dashboard):
 # - "PUBLICO REFORMA 333" (~71% Rent MX) → CDMX → fusionado a EDO MEX (REGION_ALIASES)
-# - "ALDEA COWORKING" (coworking) → NUEVO LEON
-# - "Wework méxico Co S de RL de CV" → JALISCO (supuesto reversible de Kamila; antes only_total NL+JAL)
-# - "MANUEL GUTIERREZ GONZALEZ" → QUERETARO (confirmado 31-ago-2026, arrendador sede QRO)
+# - "ALDEA COWORKING" → GUANAJUATO (Danibot 31-ago corrección: antes NL, la oficina real es de GTO)
+# - "MANUEL GUTIERREZ GONZALEZ" → QUERETARO (confirmado 31-ago, arrendador sede QRO)
+# - "Wework méxico Co S de RL de CV" → SPLIT 61.8% JAL / 38.2% NL (auxiliar contable Danibot 31-ago)
 # - todo lo demás → rent_nacional en Total (servicios sin ciudad: AT&T, telecoms, papelería, etc.)
-# El mapeo vendor→region canónica se resuelve luego contra REGION_ALIASES del pipeline.
 RENT_MX_VENDOR_TO_REGION = {
     "PUBLICO REFORMA 333": "CDMX",
-    "ALDEA COWORKING": "NUEVO LEON",
-    "Wework méxico Co S de RL de CV": "JALISCO",
+    "ALDEA COWORKING": "GUANAJUATO",
     "MANUEL GUTIERREZ GONZALEZ": "QUERETARO",
 }
-# LEGACY: se conserva por compat con el schema `rent_wework_nl_jal` (bucket only_total).
-# Ya no se usa: WeWork ahora se atribuye a JALISCO directamente en RENT_MX_VENDOR_TO_REGION.
+# WeWork MX se factura consolidado en opex_terceros.json pero el auxiliar contable
+# de NetSuite (base_final_auxiliares.ubicacion) permite separar por ciudad.
+# El opex_terceros no trae el split, así que aplicamos el ratio 61.8/38.2 GDL/MTY
+# derivado del auxiliar ene-jun 2026 (Danibot commit 96ded14 blt-dashboard).
+# TODO: reemplazar por query directo al auxiliar cuando el fetcher soporte más de bet_data_p2.
+RENT_MX_VENDOR_SPLIT = {
+    "Wework méxico Co S de RL de CV": [
+        ("JALISCO", 0.618),
+        ("NUEVO LEON", 0.382),
+    ],
+}
+# LEGACY: mantiene la key `rent_wework_nl_jal` en el schema del JSON aunque ya no se emita
+# (WeWork ahora se atribuye por ciudad vía RENT_MX_VENDOR_SPLIT).
 RENT_MX_VENDOR_WEWORK = "__DISABLED__"
 
 # Mapeo c_ubicacion (bet_data_p2) → region canónica MX (post-REGION_ALIASES)
@@ -238,14 +247,16 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
 
     for v in vendors:
         name = v["name"]
-        # Determinar destino (aplicar REGION_ALIASES si mapea a una región canónica)
-        if name == RENT_MX_VENDOR_WEWORK:
-            dest_region, fact_key = "Total", "rent_wework_nl_jal"
+        # Determinar destino(s): SPLIT reparte por %, TO_REGION va 1:1, resto = nacional.
+        if name in RENT_MX_VENDOR_SPLIT:
+            splits = [(_alias_region(reg), pct) for reg, pct in RENT_MX_VENDOR_SPLIT[name]]
+            fact_key = "rent_atribuible"
         elif name in RENT_MX_VENDOR_TO_REGION:
-            dest_region = _alias_region(RENT_MX_VENDOR_TO_REGION[name])
+            splits = [(_alias_region(RENT_MX_VENDOR_TO_REGION[name]), 1.0)]
             fact_key = "rent_atribuible"
         else:
-            dest_region, fact_key = "Total", "rent_nacional"
+            splits = [("Total", 1.0)]
+            fact_key = "rent_nacional"
 
         # Recorrer series a2025, a2026 (actuals). budgets/forecasts se ignoran.
         for series_key, months in v.items():
@@ -260,13 +271,11 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             for i, val_usdk in enumerate(months):
                 if val_usdk == 0.0:
                     continue
-                # Clip meses futuros de 2026 rellenados con 0 → ya filtrados arriba,
-                # pero por seguridad: si year==2026 y i >= ytd_month, ignorar aunque
-                # el valor sea != 0 (defensivo contra fillers no-cero).
                 if year == 2026 and i >= ytd_month:
                     continue
                 mes = f"{year}-{i + 1:02d}"
-                _add(dest_region, mes, fact_key, float(val_usdk))
+                for dest_region, pct in splits:
+                    _add(dest_region, mes, fact_key, float(val_usdk) * pct)
 
     # Emitir rent atribuible / wework / nacional
     total_atrib_by_mes: dict[str, float] = {}
