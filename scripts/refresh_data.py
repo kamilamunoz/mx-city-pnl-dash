@@ -91,6 +91,24 @@ CORP_OPEX_UBIC_TO_REGION = {
 }
 CORP_OPEX_NACIONAL_UBIC = {"GLOBAL MEX", "MÉXICO"}
 
+# Overrides por vendor: cuando el gasto de Corp OpEx viene de un vendor conocido
+# consolidado (ej. Facturify que factura Uber Business consolidado a nivel país),
+# aplicamos un split manual por ciudad en lugar del c_ubicacion default de bet_data_p2.
+# ⚠️ Los porcentajes son manuales — deben actualizarse cuando llegue el share real.
+CORP_OPEX_VENDOR_SPLIT: dict[str, list[tuple[str, float]]] = {
+    # Facturify factura Uber Business MX consolidado (RFC FAC150514TM8). La ubicación
+    # en bet_data_p2 llega mayormente como GLOBAL MEX / MÉXICO. Kamila define split
+    # manual 2026-09-01 basado en gastos de julio 2026 — actualizar cuando se
+    # consiga el histórico de viajes por ciudad.
+    "FACTURIFY SA DE CV": [
+        ("JALISCO", 0.300),
+        ("NUEVO LEON", 0.327),
+        ("CDMX", 0.256),        # → EDO MEX vía REGION_ALIASES
+        ("GUANAJUATO", 0.042),
+        ("QUERETARO", 0.075),
+    ],
+}
+
 # m_metrica → fact_key en el schema consolidado
 CORP_OPEX_METRIC_TO_KEY = {
     "03. Sales & Ops": "corp_opex_sales_ops",
@@ -337,6 +355,14 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
 
         corp_acum: dict[tuple[str, str, str], float] = {}
         ubic_no_mapeados: set[str] = set()
+
+        def _clean(v):
+            if v is None:
+                return ""
+            if isinstance(v, float) and pd.isna(v):
+                return ""
+            return str(v)
+
         for row in corp_df.itertuples():
             metric = row.m_metrica
             fact_key = CORP_OPEX_METRIC_TO_KEY.get(metric)
@@ -345,54 +371,51 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
 
             ubic = row.c_ubicacion
             mes_str = pd.to_datetime(row.mes).strftime("%Y-%m")
-            valor = float(row.actuals_mxn)
+            valor_total = float(row.actuals_mxn)
 
-            if ubic in CORP_OPEX_UBIC_TO_REGION:
-                region = _alias_region(CORP_OPEX_UBIC_TO_REGION[ubic])
-                key = fact_key
-            elif ubic in CORP_OPEX_NACIONAL_UBIC or ubic is None:
-                region = "Total"
-                key = "corp_opex_nacional"
-            else:
-                ubic_no_mapeados.add(ubic)
-                region = "Total"
-                key = "corp_opex_nacional"
-
-            k = (region, mes_str, key)
-            corp_acum[k] = corp_acum.get(k, 0.0) + valor
-            if corp_max_mes is None or mes_str > corp_max_mes:
-                corp_max_mes = mes_str
-
-            # Facts detallados por tercero+cuenta para drill-down.
-            # Sanitize NaN → strings vacíos (pandas trae NaN de columnas STRING nulas y
-            # eso rompe el JSON generado, que el frontend no puede parsear).
-            def _clean(v):
-                if v is None:
-                    return ""
-                if isinstance(v, float) and pd.isna(v):
-                    return ""
-                return str(v)
-            tercero = _clean(getattr(row, "c_tercero", None)) or "(sin tercero)"
+            tercero_raw = _clean(getattr(row, "c_tercero", None))
+            tercero = tercero_raw or "(sin tercero)"
             cuenta = _clean(getattr(row, "c_cuenta", None))
             cuenta_desc = _clean(getattr(row, "c_cuenta_descripcion", None))
             filas_row = int(getattr(row, "filas", 1) or 1)
             fk = (tercero, cuenta)
 
-            def _upsert(cell_key: tuple[str, str, str]) -> None:
+            # Determinar splits (uno o varios por regla de vendor). El default
+            # es una sola asignación 1:1 según c_ubicacion.
+            if tercero_raw in CORP_OPEX_VENDOR_SPLIT:
+                splits = [(_alias_region(reg), pct) for reg, pct in CORP_OPEX_VENDOR_SPLIT[tercero_raw]]
+                key_default = fact_key  # split reasigna por ciudad — nunca "nacional"
+            elif ubic in CORP_OPEX_UBIC_TO_REGION:
+                splits = [(_alias_region(CORP_OPEX_UBIC_TO_REGION[ubic]), 1.0)]
+                key_default = fact_key
+            elif ubic in CORP_OPEX_NACIONAL_UBIC or ubic is None:
+                splits = [("Total", 1.0)]
+                key_default = "corp_opex_nacional"
+            else:
+                ubic_no_mapeados.add(ubic)
+                splits = [("Total", 1.0)]
+                key_default = "corp_opex_nacional"
+
+            def _upsert(cell_key: tuple[str, str, str], amount: float) -> None:
                 cell = corp_facts.setdefault(cell_key, {})
                 if fk in cell:
-                    cell[fk]["monto"] += valor
+                    cell[fk]["monto"] += amount
                     cell[fk]["filas"] += filas_row
                 else:
-                    cell[fk] = {"cuenta_desc": cuenta_desc, "monto": valor, "filas": filas_row}
+                    cell[fk] = {"cuenta_desc": cuenta_desc, "monto": amount, "filas": filas_row}
 
-            # 1) Fact en (region, mes, key) — región de destino real
-            _upsert(k)
-            # 2) Fact adicional en ("Total", mes, key) para que Total consolide las sub-métricas
-            #    atribuibles por ciudad. `corp_opex_nacional` ya cae directamente en Total (no
-            #    dupllicar) — se salta ese caso.
-            if region != "Total" and key != "corp_opex_nacional":
-                _upsert(("Total", mes_str, key))
+            for region, pct in splits:
+                valor = valor_total * pct
+                k = (region, mes_str, key_default)
+                corp_acum[k] = corp_acum.get(k, 0.0) + valor
+                if corp_max_mes is None or mes_str > corp_max_mes:
+                    corp_max_mes = mes_str
+
+                # Fact en (region, mes, key)
+                _upsert(k, valor)
+                # Fact adicional en Total (para consolidado de sub-métricas atribuibles)
+                if region != "Total" and key_default != "corp_opex_nacional":
+                    _upsert(("Total", mes_str, key_default), valor)
 
         if ubic_no_mapeados:
             log.warning("Ubicaciones no mapeadas → corp_opex_nacional: %s", sorted(ubic_no_mapeados))
