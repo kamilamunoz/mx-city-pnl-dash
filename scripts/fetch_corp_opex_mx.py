@@ -34,6 +34,7 @@ SELECT
     c_tercero,
     CAST(c_cuenta AS STRING) AS c_cuenta,
     c_cuenta_descripcion,
+    c_descripcion_transaccion,
     COUNT(*) AS filas,
     SUM(actuals_accounting) AS actuals_mxn
 FROM `papyrus-delivery-data.corp_gov_global.bet_data_p2`
@@ -44,7 +45,7 @@ WHERE m_categoria = '04. Opex'
   AND (c_ubicacion NOT IN ('GLOBAL MEX MB', 'VALLE DE MEXICO MB', 'MERBOS') OR c_ubicacion IS NULL)
   AND actuals_accounting IS NOT NULL
   AND actuals_accounting != 0
-GROUP BY 1, 2, 3, 4, 5, 6
+GROUP BY 1, 2, 3, 4, 5, 6, 7
 HAVING actuals_mxn != 0
 ORDER BY mes DESC, m_metrica, c_ubicacion, ABS(SUM(actuals_accounting)) DESC
 """

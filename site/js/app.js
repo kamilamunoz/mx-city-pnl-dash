@@ -557,7 +557,7 @@ function openCorpDrill(row, mes, region) {
         <th style="text-align:left">Tercero</th>
         ${subColHeader}
         <th style="text-align:left">Cuenta</th>
-        <th style="text-align:left">Descripción</th>
+        <th style="text-align:left">Detalle</th>
         <th style="text-align:right"># filas</th>
         <th style="text-align:right">Monto (MXN)</th>
         <th style="text-align:right">% del total</th>
@@ -570,17 +570,21 @@ function openCorpDrill(row, mes, region) {
   if (entries.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${colspan}" class="drill-empty">Sin terceros en esta celda.</td></tr>`;
   } else {
+    const MAX_DETALLE = 80;
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
     entries.forEach((e, i) => {
       const tr = document.createElement('tr');
       const pct = total !== 0 ? (e.monto / total * 100) : 0;
-      const cleanDesc = (e.cuenta_desc || '').replace(/^\d+\.\s*Cuenta:\s*\d+\s*/, '').replace(/^\d+\.\s*Explicación\s*Other:\s*/, '');
-      const subCell = isGroup ? `<td class="small">${e.submetrica || ''}</td>` : '';
+      const detalleRaw = e.detalle || '(sin detalle)';
+      const detalleTrunc = detalleRaw.length > MAX_DETALLE ? detalleRaw.slice(0, MAX_DETALLE - 1) + '…' : detalleRaw;
+      const detalleCell = `<td class="small" title="${esc(detalleRaw)}">${esc(detalleTrunc)}</td>`;
+      const subCell = isGroup ? `<td class="small">${esc(e.submetrica || '')}</td>` : '';
       tr.innerHTML = `
         <td>${i + 1}</td>
-        <td>${e.tercero || '(sin tercero)'}</td>
+        <td>${esc(e.tercero || '(sin tercero)')}</td>
         ${subCell}
-        <td>${e.cuenta || ''}</td>
-        <td class="small">${cleanDesc}</td>
+        <td>${esc(e.cuenta || '')}</td>
+        ${detalleCell}
         <td style="text-align:right">${e.filas}</td>
         <td style="text-align:right">${fmt(e.monto, false)}</td>
         <td style="text-align:right">${pct.toFixed(1)}%</td>

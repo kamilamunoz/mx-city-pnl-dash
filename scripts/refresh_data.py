@@ -377,8 +377,9 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
             tercero = tercero_raw or "(sin tercero)"
             cuenta = _clean(getattr(row, "c_cuenta", None))
             cuenta_desc = _clean(getattr(row, "c_cuenta_descripcion", None))
+            detalle = _clean(getattr(row, "c_descripcion_transaccion", None)) or "(sin detalle)"
             filas_row = int(getattr(row, "filas", 1) or 1)
-            fk = (tercero, cuenta)
+            fk = (tercero, cuenta, detalle)
 
             # Determinar splits (uno o varios por regla de vendor). El default
             # es una sola asignación 1:1 según c_ubicacion.
@@ -402,7 +403,12 @@ def _load_local_opex_mx() -> tuple[pd.DataFrame | None, dict]:
                     cell[fk]["monto"] += amount
                     cell[fk]["filas"] += filas_row
                 else:
-                    cell[fk] = {"cuenta_desc": cuenta_desc, "monto": amount, "filas": filas_row}
+                    cell[fk] = {
+                        "cuenta_desc": cuenta_desc,
+                        "detalle": detalle,
+                        "monto": amount,
+                        "filas": filas_row,
+                    }
 
             for region, pct in splits:
                 valor = valor_total * pct
@@ -669,11 +675,12 @@ def main() -> None:
         nested: dict = {}
         for (region, mes, key), cell in corp_facts.items():
             entries = []
-            for (tercero, cuenta), agg in cell.items():
+            for (tercero, cuenta, detalle), agg in cell.items():
                 entries.append({
                     "tercero": tercero,
                     "cuenta": cuenta,
                     "cuenta_desc": agg["cuenta_desc"],
+                    "detalle": agg.get("detalle", detalle),
                     "monto": round(agg["monto"], 2),
                     "filas": agg["filas"],
                 })
@@ -684,7 +691,7 @@ def main() -> None:
             "meta": {
                 "generado_en": datetime.now().isoformat(timespec="seconds"),
                 "fuente": "papyrus-delivery-data.corp_gov_global.bet_data_p2",
-                "descripcion": "Drill-down por tercero/cuenta para líneas de Corp OpEx del consolidado MX. Se agrupa por (region, mes, sub-metrica) → lista de terceros. Ordenado por |monto| desc.",
+                "descripcion": "Drill-down por tercero/cuenta/detalle de transacción para líneas de Corp OpEx del consolidado MX. Se agrupa por (region, mes, sub-metrica) → lista de (tercero, cuenta, detalle). Ordenado por |monto| desc.",
                 "currency": "MXN",
                 "cobertura_hasta": local_opex_meta.get("corp_opex_cobertura_hasta"),
             },
