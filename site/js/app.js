@@ -58,6 +58,20 @@ const CORP_OPEX_SUB_KEYS = [
 ];
 const CORP_OPEX_DRILLABLE_KEYS = new Set([...CORP_OPEX_SUB_KEYS, 'corp_opex']);
 
+// Consolidado MX: cada línea de Contribution Margin por producto se muestra como
+// % del REVENUE DE SU PROPIO PRODUCTO (no del Volumen Intermediado total). Las
+// demás líneas (Local OpEx y sus subcuentas, Net City) siguen contra
+// cons_gmv_total. Paridad con co-city-pnl-dash. MX no tiene HabiCredit.
+const CONS_CM_TO_REVENUE_KEY = {
+  'cons_cm_mm': 'cons_gmv_mm',
+  'cons_cm_inmo': 'cons_gmv_inmo',
+};
+const REVENUE_KEY_LABEL = {
+  'cons_gmv_mm': 'GMV MM',
+  'cons_gmv_inmo': 'GMV Inmo',
+  'cons_gmv_total': 'Volumen Intermediado',
+};
+
 // ─── login ────────────────────────────────────────────────────────────
 function unlockUI() {
   document.getElementById('loginGate').style.display = 'none';
@@ -774,7 +788,8 @@ function renderCmpInsights(regionesSel, sums, cfg) {
     const raw = sums[region][kpi.key];
     if (raw === undefined || raw === null) return null;
     if (kpi.norm === 'pct') {
-      const rev = sums[region][revenueKey] || 0;
+      const denomKey = CONS_CM_TO_REVENUE_KEY[kpi.key] || revenueKey;
+      const rev = sums[region][denomKey] || 0;
       if (!rev) return null;
       return raw / rev;
     }
@@ -898,11 +913,16 @@ function renderCmp() {
     revenueByRegion[r] = sums[r][cfg.revenueKey] || 0;
     nidsByRegion[r] = sums[r][cfg.nidsKey] || 0;
   }
+  // Denominador específico por línea: CM de cada producto usa su propio revenue.
+  const revForRegionRow = (region, rowKey) => {
+    const denomKey = CONS_CM_TO_REVENUE_KEY[rowKey] || cfg.revenueKey;
+    return sums[region][denomKey] || 0;
+  };
 
   const applyMetric = (val, region, row) => {
     if (val === null || val === undefined) return null;
     if (state.cmpMetrica === 'pct') {
-      const base = revenueByRegion[region];
+      const base = revForRegionRow(region, row.key);
       if (!base || !isFinite(base) || row.sign === 'count') return null;
       return val / base;
     }
@@ -931,7 +951,7 @@ function renderCmp() {
     const base = fmtCell(val, row);
     if (!showPctBelow) return base;
     if (pctExcluded.has(row.key) || row.sign === 'count') return base;
-    const rev = revenueByRegion[region];
+    const rev = revForRegionRow(region, row.key);
     if (!rev || !isFinite(rev)) return base;
     const pct = rawVal / rev;
     return `${base}<br><span class="pct">${fmtPct(pct)}</span>`;
@@ -1588,9 +1608,17 @@ function renderConsolidated() {
   const body = document.getElementById('consBody');
   body.innerHTML = '';
 
-  // Base de % = cons_gmv_total (GMV MM + GMV Inmo) para lectura consistente
+  // Denominadores por mes: uno por producto + el total. Cada línea del waterfall
+  // usa el que corresponde según CONS_CM_TO_REVENUE_KEY (CM MM → GMV MM, etc).
   const revByMonth = {};
-  for (const m of meses) revByMonth[m] = (dataRegion[m] || {})['cons_gmv_total'] || 0;
+  for (const m of meses) {
+    const dm = dataRegion[m] || {};
+    revByMonth[m] = {
+      'cons_gmv_mm': dm['cons_gmv_mm'] || 0,
+      'cons_gmv_inmo': dm['cons_gmv_inmo'] || 0,
+      'cons_gmv_total': dm['cons_gmv_total'] || 0,
+    };
+  }
 
   const showPctRow = (row) =>
     !['cons_props_mm', 'cons_props_inmo', 'cons_props_total',
@@ -1644,8 +1672,17 @@ function renderConsolidated() {
       }
 
       if (showPctRow(row) && val !== null && revByMonth[m]) {
-        const pct = val / revByMonth[m];
-        cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
+        const denomKey = CONS_CM_TO_REVENUE_KEY[row.key] || 'cons_gmv_total';
+        const rev = revByMonth[m][denomKey] || 0;
+        if (rev) {
+          const pct = val / rev;
+          cellEl.innerHTML = `${fmt(val, isCount)}<br><span class="pct">${fmtPct(pct)}</span>`;
+          if (denomKey !== 'cons_gmv_total') {
+            cellEl.title = `% sobre ${REVENUE_KEY_LABEL[denomKey]} (revenue del propio producto)`;
+          }
+        } else {
+          cellEl.textContent = fmt(val, isCount);
+        }
       } else {
         cellEl.textContent = fmt(val, isCount);
       }
