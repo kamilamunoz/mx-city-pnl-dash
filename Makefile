@@ -5,12 +5,13 @@
 #   make raw       corre la query BQ del tracker MM y guarda data/raw_apartment_mx.parquet
 #   make raw_mkt   corre la query BQ de marketing por region y guarda data/raw_marketing_mx.parquet
 #   make raw_corp  corre la query BQ de Corp OpEx por region y guarda data/raw_corp_opex_mx.parquet
+#   make raw_fee   corre la query BQ del fee Exclusividad Venta (cta 41010118) y guarda data/raw_fee_income_mx.parquet
 #   make refresh   agrega P&L por (mes, region) + Local OpEx y escribe site/data/kpi_pnl.json
 #   make serve     abre el sitio en http://localhost:8001/site/
 #   make lint      revisa el codigo Python con ruff
 #   make clean     borra archivos generados de Python (no toca los JSON)
 
-.PHONY: install raw raw_mkt raw_corp refresh serve lint clean
+.PHONY: install raw raw_mkt raw_corp raw_fee refresh serve lint clean
 
 install:
 	uv sync
@@ -23,6 +24,9 @@ raw_mkt:
 
 raw_corp:
 	uv run python -m scripts.fetch_corp_opex_mx
+
+raw_fee:
+	uv run python -m scripts.fetch_fee_income_mx
 
 refresh:
 	uv run python -m scripts.refresh_data

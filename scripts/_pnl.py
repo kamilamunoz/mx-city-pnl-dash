@@ -109,6 +109,8 @@ PNL_STRUCTURE = [
     {"key": "invoiced_sales", "label": "# Invoiced Sales", "parent": None, "type": "kpi", "sign": "count"},
     {"key": "gmv_sin_hc100", "label": "(+) GMV Selling Price (sin HC100)", "parent": None, "type": "kpi", "sign": "income"},
     {"key": "fee_hc100", "label": "(+) Fee HC100", "parent": None, "type": "kpi", "sign": "income"},
+    {"key": "fee_exclusividad", "label": "(+) Fee Exclusividad Venta", "parent": None, "type": "kpi", "sign": "income",
+     "note": "Ingreso por exclusividad venta (cuenta 41010118, subsidiaria Tu Habi). Fuente: auxiliar_contable_mx, joineado por NID. Suma al GMV Habi para el cálculo del Gross Profit."},
     {"key": "gmv_habi", "label": "(=) GMV Precio de Venta Habi", "parent": None, "type": "total", "sign": "income"},
     {"key": "purchase_price", "label": "(-) GMV Purchase Price", "parent": None, "type": "kpi", "sign": "cost"},
     {"key": "gross_profit", "label": "(=) Gross Profit", "parent": None, "type": "total", "sign": "net"},
@@ -253,11 +255,16 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
     #  Nota: hc100_financial en el tracker es un flag string ('Si'/'No'), no el monto.
     #  El monto del fee = sell_price - sell_price_MM_sin_HC100
     lines["invoiced_sales"] = pd.Series(1, index=df.index, dtype=float)  # count
-    lines["gmv_habi"] = _num(df["sell_price_financial"])
     lines["gmv_sin_hc100"] = _num(df["sell_price_MM_sin_HC100_financial"])
-    lines["fee_hc100"] = lines["gmv_habi"] - lines["gmv_sin_hc100"]
+    sell_price = _num(df["sell_price_financial"])
+    lines["fee_hc100"] = sell_price - lines["gmv_sin_hc100"]
+    # Fee Exclusividad viene del auxiliar_contable (cuenta 41010118), joineado por
+    # NID en refresh_data.py. Se suma al GMV Habi como un ingreso adicional que
+    # cobra Habi por darle exclusividad al vendedor.
+    lines["fee_exclusividad"] = _num(df["fee_income"]) if "fee_income" in df.columns else pd.Series(0.0, index=df.index)
+    lines["gmv_habi"] = sell_price + lines["fee_exclusividad"]
     lines["purchase_price"] = -_num(df["buy_price_financial"])
-    # Gross Profit se calcula sobre GMV Habi (con fee HC100 incluido).
+    # Gross Profit se calcula sobre GMV Habi (con Fee HC100 + Fee Exclusividad incluidos).
     # Los units cost del dashboard también se miden sobre gmv_habi.
     lines["gross_profit"] = lines["gmv_habi"] + lines["purchase_price"]
     lines["iva"] = -_num(df["IVA"])

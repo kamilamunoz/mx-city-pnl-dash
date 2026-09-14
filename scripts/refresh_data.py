@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_PATH = REPO_ROOT / "data" / "raw_apartment_mx.parquet"
 RAW_MARKETING_PATH = REPO_ROOT / "data" / "raw_marketing_mx.parquet"
 RAW_CORP_OPEX_PATH = REPO_ROOT / "data" / "raw_corp_opex_mx.parquet"
+RAW_FEE_INCOME_PATH = REPO_ROOT / "data" / "raw_fee_income_mx.parquet"
 OUT_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl.json"
 OUT_FACTS_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_facts.json"
 OUT_CONSOLIDATED_PATH = REPO_ROOT / "site" / "data" / "kpi_pnl_consolidated.json"
@@ -560,6 +561,18 @@ def main() -> None:
     log.info("Preparando (mes + region_norm) ...")
     df = prepare(raw)
     log.info("Después de prepare: %d filas (excluidas %d por fecha nula)", len(df), len(raw) - len(df))
+
+    # Fee Exclusividad Venta (cuenta 41010118). Se joina por NID al tracker.
+    if RAW_FEE_INCOME_PATH.exists():
+        fee_df = pd.read_parquet(RAW_FEE_INCOME_PATH)
+        df = df.merge(fee_df, on="nid", how="left")
+        df["fee_income"] = pd.to_numeric(df["fee_income"], errors="coerce").fillna(0.0)
+        matched = int((df["fee_income"] != 0).sum())
+        log.info("Fee Exclusividad: %d NIDs con fee (de %d en tracker) · total MXN %.0f",
+                 matched, len(df), df["fee_income"].sum())
+    else:
+        df["fee_income"] = 0.0
+        log.warning("data/raw_fee_income_mx.parquet no existe — corre `make raw_fee`. Fee Exclusividad = 0.")
 
     regiones = _region_labels(df)
     log.info("Regiones finales: %s", [r["key"] for r in regiones])
