@@ -651,19 +651,44 @@ def main() -> None:
         "rem_alistamiento", "rem_kit_post", "remodeling",
     ]
 
+    # Sanitizer: convierte NaN/NaT/None a None (JSON null). Necesario tras
+    # ampliar universo Remo Sint a NIDs no facturados (mes/mes_end_remo pueden
+    # ser NaN). Sin esto, .astype(str) sobre columnas con NaN emite el literal
+    # "NaN" en el JSON, que rompe silenciosamente fetch() en browser.
+    def _san_str(v):
+        if v is None:
+            return None
+        try:
+            if pd.isna(v):
+                return None
+        except (TypeError, ValueError):
+            pass
+        s = str(v)
+        if s in ("nan", "NaN", "NaT", "None"):
+            return None
+        return s
+
+    def _san_num(v):
+        try:
+            if v is None or pd.isna(v):
+                return 0.0
+        except (TypeError, ValueError):
+            pass
+        return float(v)
+
     facts_payload = {}
     for vista in ("acc", "sintetico"):
         per_nid = line_values_per_nid(df, vista)
         # arrays paralelos + matriz de valores (round a 2)
-        nids = per_nid["nid"].astype(str).tolist()
-        regs = per_nid["region"].astype(str).tolist()
-        meses_ = per_nid["mes"].astype(str).tolist()
-        meses_endremo = per_nid["mes_end_remo"].astype(str).tolist()
+        nids = [_san_str(v) for v in per_nid["nid"].tolist()]
+        regs = [_san_str(v) for v in per_nid["region"].tolist()]
+        meses_ = [_san_str(v) for v in per_nid["mes"].tolist()]
+        meses_endremo = [_san_str(v) for v in per_nid["mes_end_remo"].tolist()]
         matriz = []
         for k in line_keys:
             if k in per_nid.columns:
                 # redondear a 2 decimales; convertir a floats python nativos
-                col = per_nid[k].round(2).astype(float).tolist()
+                col = [round(_san_num(v), 2) for v in per_nid[k].tolist()]
                 matriz.append(col)
             else:
                 matriz.append([0.0] * len(per_nid))
@@ -682,7 +707,9 @@ def main() -> None:
             facts_payload[vista]["drill_por_end_remo"] = remo_sint_drill_keys
 
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
-        json.dump(facts_payload, f, ensure_ascii=False, separators=(",", ":"))
+        # allow_nan=False para que crashee temprano si un NaN residual sobrevive
+        # el saneo — un NaN literal en el JSON rompe silenciosamente fetch() en browser.
+        json.dump(facts_payload, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     log.info("Escrito → %s (%.1f KB)", OUT_FACTS_PATH, OUT_FACTS_PATH.stat().st_size / 1024)
 
     # Extraer facts de Corp OpEx del meta ANTES de pasar meta al writer del
