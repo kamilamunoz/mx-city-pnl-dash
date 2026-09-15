@@ -651,6 +651,16 @@ def main() -> None:
         "rem_alistamiento", "rem_kit_post", "remodeling",
     ]
 
+    # Keys de TC Sellers (compra) que en vista Sintético se drillean por
+    # mes_deed_compra (date_of_purchase_real_deed_financial), no por mes de
+    # facturación. El frontend debe consultar `mes_deed_compra[i]` en vez de
+    # `mes[i]` cuando la key drilleada esté en este set.
+    tc_sellers_sint_drill_keys = [
+        "txs_poder", "txs_notariales", "txs_clg",
+        "txs_cancelacion", "txs_certificaciones", "txs_otros",
+        "tramites_sellers",
+    ]
+
     # Sanitizer: convierte NaN/NaT/None a None (JSON null). Necesario tras
     # ampliar universo Remo Sint a NIDs no facturados (mes/mes_end_remo pueden
     # ser NaN). Sin esto, .astype(str) sobre columnas con NaN emite el literal
@@ -684,6 +694,7 @@ def main() -> None:
         regs = [_san_str(v) for v in per_nid["region"].tolist()]
         meses_ = [_san_str(v) for v in per_nid["mes"].tolist()]
         meses_endremo = [_san_str(v) for v in per_nid["mes_end_remo"].tolist()]
+        meses_deedcompra = [_san_str(v) for v in per_nid["mes_deed_compra"].tolist()]
         matriz = []
         for k in line_keys:
             if k in per_nid.columns:
@@ -697,14 +708,17 @@ def main() -> None:
             "nid": nids,
             "region": regs,
             "mes": meses_,
-            "mes_end_remo": meses_endremo,  # NEW: mes de cierre remo (con fallback a mes)
+            "mes_end_remo": meses_endremo,  # mes de cierre remo (fallback a mes)
+            "mes_deed_compra": meses_deedcompra,  # NEW: mes escritura compra Habi (fallback a mes)
             # matriz [linea][nid_idx] → val
             "valores": matriz,
         }
-        # Solo en vista Sintético las líneas de Remo drillean por end_remo.
-        # ACC no tiene esta columna en su payload (agrupación intacta).
+        # Solo en vista Sintético las líneas de Remo drillean por end_remo,
+        # y las de TC Sellers por deed_compra. ACC no tiene estas columnas
+        # en su payload (agrupación intacta).
         if vista == "sintetico":
             facts_payload[vista]["drill_por_end_remo"] = remo_sint_drill_keys
+            facts_payload[vista]["drill_por_deed_compra"] = tc_sellers_sint_drill_keys
 
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
         # allow_nan=False para que crashee temprano si un NaN residual sobrevive
