@@ -13,11 +13,41 @@ del Excel de referencia:
                     · Incluye Kit Post Remo
 
 Todos los valores en MXN.
+
+Regla especial · Remodeling en vista Sintético
+─────────────────────────────────────────────────
+La fila **Remodeling** en la vista Sintético (y sus 5 sublíneas: Mejoras,
+Pinturas, Reparaciones, Alistamiento, Kit Post Remo) se agrupa por
+`end_remo` (mes en que se cerró la remodelación) en vez de por
+`fecha_facturacion_venta`. Esto refleja el costo "unit económico" de la
+cohorte que se remodeló en el mes, no de la que se facturó en el mes.
+
+NIDs sin `end_remo` → fallback a `fecha_facturacion_venta` (con warning).
+
+Consecuencia: la Remodeling Sintético NO es reconciliable línea por línea
+contra la Remodeling ACC (que sigue agrupada por mes de facturación).
+Managerial (ACC) queda intacta.
 """
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
+
+log = logging.getLogger(__name__)
+
+# Sublíneas de Remo que forman la vista Sintético (se re-agrupan por end_remo).
+# Alistamiento se comparte con la vista ACC pero en Sintético también se agrupa
+# por end_remo — el motor recomputa la fila `rem_alistamiento` según la vista.
+REMO_SINTETICO_KEYS = (
+    "rem_mejoras",
+    "rem_pinturas",
+    "rem_reparaciones",
+    "rem_alistamiento",
+    "rem_kit_post",
+    "remodeling",
+)
 
 # Umbral de filas totales para colapsar en 'Otros'
 MIN_ROWS_PER_REGION = 50
@@ -77,6 +107,12 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
     Excluye filas con `fecha_facturacion_venta` nula (NIDs sin facturar todavía).
     Aplica REGION_ALIASES (p.ej. CDMX → EDO MEX) antes de contar y normalizar.
+
+    Añade también `mes_end_remo` (YYYY-MM string derivado de `end_remo`) con
+    fallback a `mes` cuando `end_remo` es NULL. Este campo se usa SOLO en la
+    vista Sintético para re-agrupar la fila Remodeling por mes de cierre de
+    remodelación (no por mes de facturación). Emite warning con conteo si
+    hay filas que caen en el fallback.
     """
     out = df.copy()
     fecha = pd.to_datetime(out["fecha_facturacion_venta"])
@@ -85,6 +121,22 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     region_aliased = _apply_region_aliases(out["region"])
     counts_by_region = region_aliased.value_counts(dropna=False)
     out["region_norm"] = _normalize_region(region_aliased, counts_by_region)
+
+    if "end_remo" in out.columns:
+        end_remo_dt = pd.to_datetime(out["end_remo"], errors="coerce")
+        end_remo_str = end_remo_dt.dt.to_period("M").astype(str)
+        # Fallback: NIDs sin end_remo caen al mes de facturación.
+        fallback_mask = end_remo_dt.isna()
+        n_fallback = int(fallback_mask.sum())
+        if n_fallback > 0:
+            log.warning(
+                "Remo Sintético: %d NIDs sin end_remo → fallback a fecha_facturacion_venta (%.1f%% de %d facturados).",
+                n_fallback, n_fallback / len(out) * 100, len(out),
+            )
+        out["mes_end_remo"] = end_remo_str.where(~fallback_mask, out["mes"])
+    else:
+        log.warning("end_remo no está en el raw — Remo Sintético caerá 100%% al fallback (fecha_facturacion_venta).")
+        out["mes_end_remo"] = out["mes"]
     return out
 
 
@@ -124,7 +176,8 @@ PNL_STRUCTURE = [
     {"key": "rem_remodeling_acc", "label": "Remodeling Accounting", "parent": "remodeling", "type": "subcuenta", "sign": "cost", "vista": "acc"},
     {"key": "rem_alistamiento", "label": "Alistamiento", "parent": "remodeling", "type": "subcuenta", "sign": "cost"},
     {"key": "rem_kit_post", "label": "Kit Post Remo", "parent": "remodeling", "type": "subcuenta", "sign": "cost", "vista": "sintetico"},
-    {"key": "remodeling", "label": "Remodeling Costs", "parent": None, "type": "rubro", "sign": "cost"},
+    {"key": "remodeling", "label": "Remodeling Costs", "parent": None, "type": "rubro", "sign": "cost",
+     "note": "Vista Sintético: se agrupa por mes en que terminó la remodelación (end_remo), no por mes de facturación. El drill muestra los NIDs remodelados ese mes. Vista Managerial (ACC): se agrupa por mes de facturación."},
 
     # ── transaction costs · sellers ──
     {"key": "txs_poder", "label": "Poder", "parent": "tramites_sellers", "type": "subcuenta", "sign": "cost"},
@@ -366,17 +419,67 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
 
 
 def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
-    """Devuelve un DataFrame por-NID con columnas [nid, region, mes, <key1>, <key2>, ...].
+    """Devuelve un DataFrame por-NID con columnas [nid, region, mes, mes_end_remo, <key1>, <key2>, ...].
 
     Cada columna key es el valor de esa línea del P&L para ese NID en esa vista.
     Se usa para el drill-down desde el frontend.
+
+    Nota: `mes` = mes de facturación (fecha_facturacion_venta). `mes_end_remo` =
+    mes de cierre de remodelación (con fallback a mes de facturación si NULL).
+    El frontend usa `mes` para el drill del P&L en general, pero cuando la key
+    drilleada es una de las 6 de Remo en vista Sintético, debe usar
+    `mes_end_remo` como filtro (así el drill lista los NIDs remodelados en el
+    mes, no los facturados).
     """
     lines = _line_values(df_prepared, vista)
     wide = pd.DataFrame(lines)
+    wide.insert(0, "mes_end_remo", df_prepared["mes_end_remo"].values)
     wide.insert(0, "mes", df_prepared["mes"].values)
     wide.insert(0, "region", df_prepared["region_norm"].values)
     wide.insert(0, "nid", df_prepared["nid"].values)
     return wide
+
+
+def _remo_sint_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Re-agrega las 6 keys de Remo Sintético por (region, mes_end_remo).
+
+    Devuelve long DF con columnas [region, mes, key, valor] donde `mes` es el
+    mes de `end_remo` (o fallback fecha_facturacion_venta si NULL).
+
+    También produce la fila Total (todas las regiones sumadas) para cada mes.
+    """
+    lines = _line_values(df_prepared, "sintetico")
+    remo_cols = list(REMO_SINTETICO_KEYS)
+    wide = pd.DataFrame({k: lines[k] for k in remo_cols})
+    wide["region"] = df_prepared["region_norm"].values
+    wide["mes"] = df_prepared["mes_end_remo"].values
+
+    by_region = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
+    total = wide.drop(columns=["region"]).groupby("mes", as_index=False).sum(numeric_only=True)
+    total["region"] = "Total"
+
+    out = pd.concat([by_region, total], ignore_index=True)
+    return out.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
+
+
+def _remo_sint_nid_count_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Cuenta NIDs con `end_remo` en cada (region, mes_end_remo).
+
+    Devuelve long DF con key='remodeling_nid_count'. Se emite tanto por región
+    como para 'Total'. Se usa para el tooltip informativo "# NIDs remodelados
+    en el mes: N" en el drill/hover de la fila Remo Sintético.
+    """
+    df = df_prepared[["region_norm", "mes_end_remo"]].copy()
+    df.columns = ["region", "mes"]
+    by_region = df.groupby(["region", "mes"]).size().reset_index(name="valor")
+    by_region["key"] = "remodeling_nid_count"
+
+    total = df.groupby("mes").size().reset_index(name="valor")
+    total["region"] = "Total"
+    total["key"] = "remodeling_nid_count"
+
+    return pd.concat([by_region[["region", "mes", "key", "valor"]],
+                      total[["region", "mes", "key", "valor"]]], ignore_index=True)
 
 
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
@@ -392,7 +495,13 @@ def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
 
 
 def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
-    """Igual a aggregate pero también añade fila 'Total' (todas las regiones)."""
+    """Igual a aggregate pero también añade fila 'Total' (todas las regiones).
+
+    En vista Sintético, las 6 keys de Remo (Mejoras/Pinturas/Reparaciones/
+    Alistamiento/Kit Post + Remodeling total) se re-agrupan por `end_remo`
+    en vez de `fecha_facturacion_venta`. Managerial (ACC) queda intacta.
+    Además se emite `remodeling_nid_count` (informativo, para tooltip).
+    """
     by_region = aggregate(df_prepared, vista)
     lines = _line_values(df_prepared, vista)
     wide = pd.DataFrame(lines)
@@ -400,7 +509,21 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
     total = wide.groupby("mes", as_index=False).sum(numeric_only=True)
     total["region"] = "Total"
     total_long = total.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
-    return pd.concat([by_region, total_long], ignore_index=True)
+    all_long = pd.concat([by_region, total_long], ignore_index=True)
+
+    if vista == "sintetico":
+        # Sobrescribir Remo Sintético con re-agregación por end_remo.
+        remo_long = _remo_sint_by_end_remo(df_prepared)
+        # 1) borrar las filas viejas (agrupadas por fact_venta) de las 6 keys
+        mask_stale = all_long["key"].isin(REMO_SINTETICO_KEYS)
+        all_long = all_long.loc[~mask_stale].copy()
+        # 2) pegar las nuevas filas (por end_remo)
+        all_long = pd.concat([all_long, remo_long], ignore_index=True)
+        # 3) añadir count de NIDs remodelados por (region, mes_end_remo)
+        nid_count = _remo_sint_nid_count_by_end_remo(df_prepared)
+        all_long = pd.concat([all_long, nid_count], ignore_index=True)
+
+    return all_long
 
 
 # ─────────────────────────────────────────────────────────────────────────────

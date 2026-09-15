@@ -375,6 +375,16 @@ function renderTable() {
       if (row.key === 'payroll_local' && val === 0 && sinSede.includes(state.region)) {
         cellEl.title = 'Sin sede propia en BBDD para esta región';
       }
+      // Tooltip Remo Sintético: mostrar # NIDs remodelados en el mes (agrupados por end_remo).
+      // La celda ya muestra el monto y su % del GMV; el tooltip enriquece con el
+      // conteo autoritativo de "cuántos inmuebles cerraron remodelación este mes".
+      if (state.vista === 'sintetico' && row.key === 'remodeling' && val !== null) {
+        const nidCount = (dataRegion[m] || {})['remodeling_nid_count'];
+        if (nidCount !== undefined && nidCount !== null) {
+          const nInt = Math.round(nidCount);
+          cellEl.title = `# NIDs remodelados este mes: ${nInt.toLocaleString('es-MX')}\n(agrupados por end_remo, no por mes de facturación)`;
+        }
+      }
 
       // Líneas externas (payroll/rent/marketing/local_opex/net_contrib) no drillean
       const drillable = !NON_DRILLABLE.has(row.key)
@@ -434,11 +444,18 @@ function openDrill(row, mes) {
   // Base de % por-NID = gmv_habi (con fee HC100 incluido).
   const gmvIdx = facts.columnas.indexOf('gmv_habi');
 
+  // Vista Sintético: las 6 keys de Remo drillean por mes_end_remo (mes en que
+  // se cerró la remodelación), no por mes de facturación. Ver `drill_por_end_remo`
+  // en el payload de facts (escrito por refresh_data.py).
+  const drillPorEndRemo = new Set(facts.drill_por_end_remo || []);
+  const usarEndRemo = drillPorEndRemo.has(row.key) && Array.isArray(facts.mes_end_remo);
+  const mesArr = usarEndRemo ? facts.mes_end_remo : facts.mes;
+
   const items = [];
   const totalNids = facts.nid.length;
   for (let i = 0; i < totalNids; i++) {
     const matchRegion = (state.region === 'Total') || (facts.region[i] === state.region);
-    const matchMes = facts.mes[i] === mes;
+    const matchMes = mesArr[i] === mes;
     if (!matchRegion || !matchMes) continue;
     const v = facts.valores[colIdx][i];
     if (v === 0) continue;
@@ -457,7 +474,10 @@ function openDrill(row, mes) {
   const alertCount = items.filter(x => isAlert(x.valor)).length;
   const alertSum = items.filter(x => isAlert(x.valor)).reduce((s, x) => s + x.valor, 0);
 
-  const ctx = state.region === 'Total' ? `Todas las regiones · ${mes}` : `${state.region} · ${mes}`;
+  const ctxBase = state.region === 'Total' ? `Todas las regiones · ${mes}` : `${state.region} · ${mes}`;
+  // Sufijo aclaratorio para Remo Sintético (agrupación por end_remo)
+  const ctxSuf = usarEndRemo ? ' · NIDs remodelados este mes (end_remo)' : '';
+  const ctx = ctxBase + ctxSuf;
   document.getElementById('drillContext').textContent = ctx;
   document.getElementById('drillTitle').textContent = row.label;
 

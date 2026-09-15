@@ -637,6 +637,14 @@ def main() -> None:
     log.info("Construyendo facts por-NID ...")
     line_keys = [r["key"] for r in PNL_STRUCTURE]
 
+    # Keys de Remo que en vista Sintético se drillean por mes_end_remo, no por
+    # mes de facturación. El frontend debe consultar `mes_end_remo[i]` en vez
+    # de `mes[i]` cuando la key drilleada esté en este set.
+    remo_sint_drill_keys = [
+        "rem_mejoras", "rem_pinturas", "rem_reparaciones",
+        "rem_alistamiento", "rem_kit_post", "remodeling",
+    ]
+
     facts_payload = {}
     for vista in ("acc", "sintetico"):
         per_nid = line_values_per_nid(df, vista)
@@ -644,6 +652,7 @@ def main() -> None:
         nids = per_nid["nid"].astype(str).tolist()
         regs = per_nid["region"].astype(str).tolist()
         meses_ = per_nid["mes"].astype(str).tolist()
+        meses_endremo = per_nid["mes_end_remo"].astype(str).tolist()
         matriz = []
         for k in line_keys:
             if k in per_nid.columns:
@@ -657,9 +666,14 @@ def main() -> None:
             "nid": nids,
             "region": regs,
             "mes": meses_,
+            "mes_end_remo": meses_endremo,  # NEW: mes de cierre remo (con fallback a mes)
             # matriz [linea][nid_idx] → val
             "valores": matriz,
         }
+        # Solo en vista Sintético las líneas de Remo drillean por end_remo.
+        # ACC no tiene esta columna en su payload (agrupación intacta).
+        if vista == "sintetico":
+            facts_payload[vista]["drill_por_end_remo"] = remo_sint_drill_keys
 
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
         json.dump(facts_payload, f, ensure_ascii=False, separators=(",", ":"))
