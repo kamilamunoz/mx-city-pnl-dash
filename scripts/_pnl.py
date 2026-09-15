@@ -103,21 +103,39 @@ def _normalize_region(region: pd.Series, counts: pd.Series) -> pd.Series:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """Añade columna `mes` (YYYY-MM string) y `region_norm` (con 'Sin región' y 'Otros').
+    """Añade columnas de agrupación al universo COMPLETO del apartment_tracker.
 
-    Excluye filas con `fecha_facturacion_venta` nula (NIDs sin facturar todavía).
-    Aplica REGION_ALIASES (p.ej. CDMX → EDO MEX) antes de contar y normalizar.
+    - `mes` (YYYY-MM string) derivado de `fecha_facturacion_venta`. `NaT` para
+      NIDs no facturados.
+    - `facturado` (bool) — True si `fecha_facturacion_venta` no es NULL. Todas
+      las líneas Managerial (ACC) y las no-Remo del Sintético (ingresos, TC,
+      Holding, Financing, Commercial) filtran por `facturado==True`. La línea
+      Remo Sintético opera sobre el universo completo (facturados y no).
+    - `region_norm` con REGION_ALIASES (CDMX→EDO MEX), fallback EDO MEX para
+      region=NULL, y colapso a 'Otros' bajo MIN_ROWS_PER_REGION (aplicado sobre
+      el universo COMPLETO para que Remo Sint respete el mismo esquema regional
+      que las demás líneas).
+    - `mes_end_remo` (YYYY-MM string) derivado de `end_remo`. NIDs sin end_remo
+      Y sin fecha_facturacion_venta caen a NaT (se excluyen del Remo Sint —
+      no hay mes al cual asignar el costo). NIDs sin end_remo pero facturados
+      caen a `mes` (fallback existente).
 
-    Añade también `mes_end_remo` (YYYY-MM string derivado de `end_remo`) con
-    fallback a `mes` cuando `end_remo` es NULL. Este campo se usa SOLO en la
-    vista Sintético para re-agrupar la fila Remodeling por mes de cierre de
-    remodelación (no por mes de facturación). Emite warning con conteo si
-    hay filas que caen en el fallback.
+    Cambio 2026-09-15 vs versión previa: `prepare()` ya NO filtra NIDs sin
+    facturación. El filtro se aplica ahora al nivel de `aggregate()`/vista,
+    para que la vista Sintético Remo pueda operar sobre el universo completo.
     """
     out = df.copy()
-    fecha = pd.to_datetime(out["fecha_facturacion_venta"])
-    out = out.loc[fecha.notna()].copy()
-    out["mes"] = pd.to_datetime(out["fecha_facturacion_venta"]).dt.to_period("M").astype(str)
+    fecha = pd.to_datetime(out["fecha_facturacion_venta"], errors="coerce")
+    out["facturado"] = fecha.notna()
+    out["mes"] = fecha.dt.to_period("M").astype(str)  # 'NaT' string para no facturados
+    n_no_fact = int((~out["facturado"]).sum())
+    if n_no_fact > 0:
+        log.info(
+            "prepare(): %d NIDs sin fecha_facturacion_venta se mantienen (universo Remo Sintético). "
+            "Managerial (ACC) y no-Remo del Sintético filtran a %d facturados.",
+            n_no_fact, int(out["facturado"].sum()),
+        )
+
     region_aliased = _apply_region_aliases(out["region"])
     counts_by_region = region_aliased.value_counts(dropna=False)
     out["region_norm"] = _normalize_region(region_aliased, counts_by_region)
@@ -125,13 +143,20 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     if "end_remo" in out.columns:
         end_remo_dt = pd.to_datetime(out["end_remo"], errors="coerce")
         end_remo_str = end_remo_dt.dt.to_period("M").astype(str)
-        # Fallback: NIDs sin end_remo caen al mes de facturación.
-        fallback_mask = end_remo_dt.isna()
+        # Fallback: NIDs sin end_remo pero facturados → mes de facturación.
+        # NIDs sin end_remo Y sin facturación → NaT (no cuentan en Remo Sint).
+        fallback_mask = end_remo_dt.isna() & out["facturado"]
         n_fallback = int(fallback_mask.sum())
+        n_sin_ambos = int((end_remo_dt.isna() & ~out["facturado"]).sum())
         if n_fallback > 0:
             log.warning(
-                "Remo Sintético: %d NIDs sin end_remo → fallback a fecha_facturacion_venta (%.1f%% de %d facturados).",
-                n_fallback, n_fallback / len(out) * 100, len(out),
+                "Remo Sintético: %d NIDs facturados sin end_remo → fallback a fecha_facturacion_venta.",
+                n_fallback,
+            )
+        if n_sin_ambos > 0:
+            log.info(
+                "Remo Sintético: %d NIDs sin end_remo y sin facturación → excluidos (sin mes al cual asignar).",
+                n_sin_ambos,
             )
         out["mes_end_remo"] = end_remo_str.where(~fallback_mask, out["mes"])
     else:
@@ -424,27 +449,38 @@ def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     Cada columna key es el valor de esa línea del P&L para ese NID en esa vista.
     Se usa para el drill-down desde el frontend.
 
-    Nota: `mes` = mes de facturación (fecha_facturacion_venta). `mes_end_remo` =
-    mes de cierre de remodelación (con fallback a mes de facturación si NULL).
-    El frontend usa `mes` para el drill del P&L en general, pero cuando la key
-    drilleada es una de las 6 de Remo en vista Sintético, debe usar
-    `mes_end_remo` como filtro (así el drill lista los NIDs remodelados en el
-    mes, no los facturados).
+    - Vista ACC: filtra al universo FACTURADO (mismo que aggregate ACC).
+    - Vista Sintético: incluye el UNIVERSO COMPLETO (facturados y no). El
+      frontend drillea por `mes` para líneas no-Remo (solo van a matchear
+      facturados) y por `mes_end_remo` para las 6 keys de Remo (matchean
+      facturados y no facturados, según el mes en que cerró la remo).
+
+    Nota: `mes` = mes de facturación (fecha_facturacion_venta), 'NaT' string
+    para no facturados. `mes_end_remo` = mes de cierre de remodelación (con
+    fallback a mes de facturación si NULL y NID facturado; 'NaT' string si
+    ni end_remo ni facturación existen).
     """
-    lines = _line_values(df_prepared, vista)
+    if vista == "acc":
+        df_use = df_prepared.loc[df_prepared["facturado"]].copy()
+    else:  # sintetico
+        df_use = df_prepared
+    lines = _line_values(df_use, vista)
     wide = pd.DataFrame(lines)
-    wide.insert(0, "mes_end_remo", df_prepared["mes_end_remo"].values)
-    wide.insert(0, "mes", df_prepared["mes"].values)
-    wide.insert(0, "region", df_prepared["region_norm"].values)
-    wide.insert(0, "nid", df_prepared["nid"].values)
+    wide.insert(0, "mes_end_remo", df_use["mes_end_remo"].values)
+    wide.insert(0, "mes", df_use["mes"].values)
+    wide.insert(0, "region", df_use["region_norm"].values)
+    wide.insert(0, "nid", df_use["nid"].values)
     return wide
 
 
 def _remo_sint_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
-    """Re-agrega las 6 keys de Remo Sintético por (region, mes_end_remo).
+    """Re-agrega las 6 keys de Remo Sintético por (region, mes_end_remo) sobre
+    el UNIVERSO COMPLETO del tracker (facturados y no facturados).
 
     Devuelve long DF con columnas [region, mes, key, valor] donde `mes` es el
-    mes de `end_remo` (o fallback fecha_facturacion_venta si NULL).
+    mes de `end_remo` (o fallback fecha_facturacion_venta si NULL y NID facturado).
+    NIDs sin end_remo y sin facturación quedan con mes_end_remo=NaT → excluidos
+    del groupby.
 
     También produce la fila Total (todas las regiones sumadas) para cada mes.
     """
@@ -453,6 +489,8 @@ def _remo_sint_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
     wide = pd.DataFrame({k: lines[k] for k in remo_cols})
     wide["region"] = df_prepared["region_norm"].values
     wide["mes"] = df_prepared["mes_end_remo"].values
+    # Excluir filas con mes NaT (NIDs sin end_remo y sin facturación).
+    wide = wide.loc[wide["mes"].notna() & (wide["mes"] != "NaT")].copy()
 
     by_region = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
     total = wide.drop(columns=["region"]).groupby("mes", as_index=False).sum(numeric_only=True)
@@ -463,14 +501,19 @@ def _remo_sint_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
 
 
 def _remo_sint_nid_count_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
-    """Cuenta NIDs con `end_remo` en cada (region, mes_end_remo).
+    """Cuenta NIDs con `end_remo` en cada (region, mes_end_remo) sobre el
+    UNIVERSO COMPLETO del tracker (facturados y no facturados).
 
     Devuelve long DF con key='remodeling_nid_count'. Se emite tanto por región
     como para 'Total'. Se usa para el tooltip informativo "# NIDs remodelados
     en el mes: N" en el drill/hover de la fila Remo Sintético.
+
+    Excluye filas con mes_end_remo=NaT (NIDs sin end_remo Y sin facturación
+    — no hay mes al cual asignar el conteo).
     """
     df = df_prepared[["region_norm", "mes_end_remo"]].copy()
     df.columns = ["region", "mes"]
+    df = df.loc[df["mes"].notna() & (df["mes"] != "NaT")].copy()
     by_region = df.groupby(["region", "mes"]).size().reset_index(name="valor")
     by_region["key"] = "remodeling_nid_count"
 
@@ -483,12 +526,19 @@ def _remo_sint_nid_count_by_end_remo(df_prepared: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
-    """Devuelve DataFrame long: columnas [region, mes, key, valor]."""
-    lines = _line_values(df_prepared, vista)
+    """Devuelve DataFrame long: columnas [region, mes, key, valor].
+
+    Filtra al universo FACTURADO (NIDs con fecha_facturacion_venta not null).
+    Se aplica tanto a ACC como a la Sintético — para Sintético, las 6 keys
+    de Remo se sobreescriben después con _remo_sint_by_end_remo() que sí opera
+    sobre el universo completo.
+    """
+    df_fact = df_prepared.loc[df_prepared["facturado"]].copy()
+    lines = _line_values(df_fact, vista)
     # empaquetar en un DF ancho de una vez
     wide = pd.DataFrame(lines)
-    wide["region"] = df_prepared["region_norm"].values
-    wide["mes"] = df_prepared["mes"].values
+    wide["region"] = df_fact["region_norm"].values
+    wide["mes"] = df_fact["mes"].values
     grouped = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
     long = grouped.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     return long
@@ -499,31 +549,90 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
 
     En vista Sintético, las 6 keys de Remo (Mejoras/Pinturas/Reparaciones/
     Alistamiento/Kit Post + Remodeling total) se re-agrupan por `end_remo`
-    en vez de `fecha_facturacion_venta`. Managerial (ACC) queda intacta.
-    Además se emite `remodeling_nid_count` (informativo, para tooltip).
+    sobre el UNIVERSO COMPLETO del tracker (facturados y no facturados).
+    Managerial (ACC) y las líneas no-Remo del Sintético siguen filtradas al
+    universo facturado.
+
+    Además se emite `remodeling_nid_count` (informativo, para tooltip) sobre
+    el mismo universo completo.
     """
     by_region = aggregate(df_prepared, vista)
-    lines = _line_values(df_prepared, vista)
+    # Total: mismo filtro que aggregate() — universo facturado.
+    df_fact = df_prepared.loc[df_prepared["facturado"]].copy()
+    lines = _line_values(df_fact, vista)
     wide = pd.DataFrame(lines)
-    wide["mes"] = df_prepared["mes"].values
+    wide["mes"] = df_fact["mes"].values
     total = wide.groupby("mes", as_index=False).sum(numeric_only=True)
     total["region"] = "Total"
     total_long = total.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
     all_long = pd.concat([by_region, total_long], ignore_index=True)
 
     if vista == "sintetico":
-        # Sobrescribir Remo Sintético con re-agregación por end_remo.
+        # Sobrescribir Remo Sintético con re-agregación por end_remo SOBRE UNIVERSO
+        # COMPLETO (incluye NIDs sin fecha_facturacion_venta).
         remo_long = _remo_sint_by_end_remo(df_prepared)
-        # 1) borrar las filas viejas (agrupadas por fact_venta) de las 6 keys
+        # 1) borrar las filas viejas (agrupadas por fact_venta, universo facturado)
+        #    de las 6 keys de Remo
         mask_stale = all_long["key"].isin(REMO_SINTETICO_KEYS)
         all_long = all_long.loc[~mask_stale].copy()
-        # 2) pegar las nuevas filas (por end_remo)
+        # 2) pegar las nuevas filas (por end_remo, universo completo)
         all_long = pd.concat([all_long, remo_long], ignore_index=True)
-        # 3) añadir count de NIDs remodelados por (region, mes_end_remo)
+        # 3) recalcular direct_costs, unlevered_profit, contribution_margin
+        #    para reflejar la nueva Remo (universo ampliado) en los totales.
+        #    Sin este recompute los totales seguirían usando la Remo del
+        #    universo facturado y el CM Sint quedaría inconsistente con
+        #    la fila de Remo mostrada.
+        #    ⚠️ Consecuencia esperada: CM Sint puede tener costo Remo sin GMV
+        #    proporcional (NIDs remodelados aún sin facturar).
+        all_long = _recompute_sint_totals(all_long)
+        # 4) añadir count de NIDs remodelados por (region, mes_end_remo)
         nid_count = _remo_sint_nid_count_by_end_remo(df_prepared)
         all_long = pd.concat([all_long, nid_count], ignore_index=True)
 
     return all_long
+
+
+def _recompute_sint_totals(all_long: pd.DataFrame) -> pd.DataFrame:
+    """Recomputa direct_costs, unlevered_profit y contribution_margin en el
+    long de Sintético después de sobreescribir Remo con universo completo.
+
+    Fórmulas (mismo signo que _line_values):
+      direct_costs        = remodeling + transaction_costs + holding
+                          + seguridad + commercial
+      unlevered_profit    = gp_sin_iva + direct_costs
+      contribution_margin = unlevered_profit + financing_costs
+    """
+    RECALC_KEYS = ("direct_costs", "unlevered_profit", "contribution_margin")
+    # Pivot long → wide para acceso rápido por (region, mes, key)
+    wide = all_long.pivot_table(
+        index=["region", "mes"], columns="key", values="valor",
+        aggfunc="sum", fill_value=0.0,
+    )
+
+    # Nueva Remo (universo ampliado) por (region, mes). Faltantes → 0.
+    rem_new = wide.get("remodeling", 0.0)
+    tc = wide.get("transaction_costs", 0.0)
+    hol = wide.get("holding", 0.0)
+    seg = wide.get("seguridad", 0.0)
+    com = wide.get("commercial", 0.0)
+    gp = wide.get("gp_sin_iva", 0.0)
+    fin = wide.get("financing_costs", 0.0)
+
+    direct_costs_new = rem_new + tc + hol + seg + com
+    unlevered_new = gp + direct_costs_new
+    cm_new = unlevered_new + fin
+
+    new_totals = pd.DataFrame({
+        "direct_costs": direct_costs_new,
+        "unlevered_profit": unlevered_new,
+        "contribution_margin": cm_new,
+    }).reset_index().melt(
+        id_vars=["region", "mes"], var_name="key", value_name="valor",
+    )
+
+    mask_stale = all_long["key"].isin(RECALC_KEYS)
+    out = all_long.loc[~mask_stale].copy()
+    return pd.concat([out, new_totals], ignore_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

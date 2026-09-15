@@ -560,7 +560,10 @@ def main() -> None:
 
     log.info("Preparando (mes + region_norm) ...")
     df = prepare(raw)
-    log.info("Después de prepare: %d filas (excluidas %d por fecha nula)", len(df), len(raw) - len(df))
+    n_fact = int(df["facturado"].sum())
+    n_no_fact = int((~df["facturado"]).sum())
+    log.info("Después de prepare: %d filas (%d facturadas + %d no facturadas — universo Remo Sintético)",
+             len(df), n_fact, n_no_fact)
 
     # Fee Exclusividad Venta (cuenta 41010118). Se joina por NID al tracker.
     if RAW_FEE_INCOME_PATH.exists():
@@ -600,7 +603,9 @@ def main() -> None:
         log.info("Inmo: generado_en=%s, regiones fuente=%s",
                  inmo_meta.get("inmo_generado_en"), inmo_meta.get("inmo_regiones_fuente"))
 
-    meses = sorted(df["mes"].unique().tolist())
+    # Meses del dashboard = meses de facturación reales (excluye 'NaT' string
+    # de NIDs no facturados que ahora se mantienen en df para Remo Sintético).
+    meses = sorted(m for m in df.loc[df["facturado"], "mes"].unique().tolist() if m and m != "NaT")
 
     payload = {
         "meta": {
@@ -612,10 +617,11 @@ def main() -> None:
             "min_rows_per_region": MIN_ROWS_PER_REGION,
             "filas_raw": int(len(raw)),
             "filas_incluidas": int(len(df)),
-            "filas_excluidas_por_fecha_nula": int(len(raw) - len(df)),
+            "filas_facturadas": int(df["facturado"].sum()),
+            "filas_no_facturadas_universo_remo_sint": int((~df["facturado"]).sum()),
             "rango_fechas": {
-                "min": pd.to_datetime(df["fecha_facturacion_venta"]).min().strftime("%Y-%m-%d"),
-                "max": pd.to_datetime(df["fecha_facturacion_venta"]).max().strftime("%Y-%m-%d"),
+                "min": pd.to_datetime(df.loc[df["facturado"], "fecha_facturacion_venta"]).min().strftime("%Y-%m-%d"),
+                "max": pd.to_datetime(df.loc[df["facturado"], "fecha_facturacion_venta"]).max().strftime("%Y-%m-%d"),
             },
         },
         "estructura": PNL_STRUCTURE,
