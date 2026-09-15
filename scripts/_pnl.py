@@ -66,6 +66,23 @@ TC_SELLERS_SINT_KEYS = (
     "tramites_sellers",
 )
 
+# Sublíneas de Transaction Costs · buyers (TC venta) que forman la vista
+# Sintético. Se re-agrupan por `date_of_sell_real_deed_financial`
+# (mes de escritura de venta Habi) en vez de `fecha_facturacion_venta`
+# para reflejar el costo "unit económico" de la cohorte que Habi escrituró
+# de venta en el mes.
+# NIDs sin escritura de venta pero facturados → fallback a mes de facturación.
+# NIDs sin escritura y sin facturación → excluidos.
+TC_BUYERS_SINT_KEYS = (
+    "txb_apertura",
+    "txb_avaluo",
+    "txb_isr",
+    "txb_inscripcion",
+    "txb_notariales",
+    "txb_otros",
+    "tramites_buyers",
+)
+
 # Umbral de filas totales para colapsar en 'Otros'
 MIN_ROWS_PER_REGION = 50
 # Los NIDs con region NULL se asignan a EDO MEX (decisión operativa de Kamila,
@@ -203,6 +220,30 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     else:
         log.warning("date_of_purchase_real_deed_financial no está en el raw — TC Sellers Sint caerá 100%% al fallback.")
         out["mes_deed_compra"] = out["mes"]
+
+    # Mes de escritura de venta Habi — bucket para TC Buyers en vista Sintético.
+    # Fallback: NIDs sin deed_venta pero facturados → mes de facturación.
+    # NIDs sin deed_venta Y sin facturación → NaT (se excluyen del bucket).
+    if "date_of_sell_real_deed_financial" in out.columns:
+        deed_v_dt = pd.to_datetime(out["date_of_sell_real_deed_financial"], errors="coerce")
+        deed_v_str = deed_v_dt.dt.to_period("M").astype(str)
+        fallback_v_mask = deed_v_dt.isna() & out["facturado"]
+        n_fb_v = int(fallback_v_mask.sum())
+        n_sin_v = int((deed_v_dt.isna() & ~out["facturado"]).sum())
+        if n_fb_v > 0:
+            log.warning(
+                "TC Buyers Sintético: %d NIDs facturados sin date_of_sell_real_deed_financial → fallback a fecha_facturacion_venta.",
+                n_fb_v,
+            )
+        if n_sin_v > 0:
+            log.info(
+                "TC Buyers Sintético: %d NIDs sin escritura de venta y sin facturación → excluidos.",
+                n_sin_v,
+            )
+        out["mes_deed_venta"] = deed_v_str.where(~fallback_v_mask, out["mes"])
+    else:
+        log.warning("date_of_sell_real_deed_financial no está en el raw — TC Buyers Sint caerá 100%% al fallback.")
+        out["mes_deed_venta"] = out["mes"]
     return out
 
 
@@ -507,6 +548,7 @@ def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
         df_use = df_prepared
     lines = _line_values(df_use, vista)
     wide = pd.DataFrame(lines)
+    wide.insert(0, "mes_deed_venta", df_use["mes_deed_venta"].values)
     wide.insert(0, "mes_deed_compra", df_use["mes_deed_compra"].values)
     wide.insert(0, "mes_end_remo", df_use["mes_end_remo"].values)
     wide.insert(0, "mes", df_use["mes"].values)
@@ -616,6 +658,55 @@ def _tc_sellers_sint_nid_count_by_deed_compra(df_prepared: pd.DataFrame) -> pd.D
                       total[["region", "mes", "key", "valor"]]], ignore_index=True)
 
 
+def _tc_buyers_sint_by_deed_venta(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Re-agrega las 7 keys de TC Buyers Sintético por (region, mes_deed_venta)
+    sobre el UNIVERSO COMPLETO del tracker (facturados y no facturados).
+
+    Devuelve long DF con columnas [region, mes, key, valor] donde `mes` es el
+    mes de escritura de venta Habi (con fallback fecha_facturacion_venta si
+    NULL y NID facturado). NIDs sin escritura de venta y sin facturación
+    quedan con mes_deed_venta=NaT → excluidos del groupby.
+
+    También emite la fila Total (todas las regiones sumadas) por mes.
+    """
+    lines = _line_values(df_prepared, "sintetico")
+    tcb_cols = list(TC_BUYERS_SINT_KEYS)
+    wide = pd.DataFrame({k: lines[k] for k in tcb_cols})
+    wide["region"] = df_prepared["region_norm"].values
+    wide["mes"] = df_prepared["mes_deed_venta"].values
+    wide = wide.loc[wide["mes"].notna() & (wide["mes"] != "NaT")].copy()
+
+    by_region = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
+    total = wide.drop(columns=["region"]).groupby("mes", as_index=False).sum(numeric_only=True)
+    total["region"] = "Total"
+
+    out = pd.concat([by_region, total], ignore_index=True)
+    return out.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
+
+
+def _tc_buyers_sint_nid_count_by_deed_venta(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Cuenta NIDs con `date_of_sell_real_deed_financial` en cada
+    (region, mes_deed_venta) sobre el UNIVERSO COMPLETO del tracker.
+
+    Se usa para el tooltip informativo "# NIDs escriturados venta este mes: N"
+    en el drill/hover de la fila TC Buyers Sintético.
+
+    Excluye filas con mes_deed_venta=NaT (NIDs sin escritura y sin facturación).
+    """
+    df = df_prepared[["region_norm", "mes_deed_venta"]].copy()
+    df.columns = ["region", "mes"]
+    df = df.loc[df["mes"].notna() & (df["mes"] != "NaT")].copy()
+    by_region = df.groupby(["region", "mes"]).size().reset_index(name="valor")
+    by_region["key"] = "tc_buyers_nid_count"
+
+    total = df.groupby("mes").size().reset_index(name="valor")
+    total["region"] = "Total"
+    total["key"] = "tc_buyers_nid_count"
+
+    return pd.concat([by_region[["region", "mes", "key", "valor"]],
+                      total[["region", "mes", "key", "valor"]]], ignore_index=True)
+
+
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     """Devuelve DataFrame long: columnas [region, mes, key, valor].
 
@@ -677,13 +768,21 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         all_long = all_long.loc[~mask_stale_tcs].copy()
         all_long = pd.concat([all_long, tcs_long], ignore_index=True)
 
-        # 3) recalcular transaction_costs (afectado por nuevo tramites_sellers)
-        #    y direct_costs / unlevered_profit / contribution_margin para
-        #    reflejar Remo Y TC Sellers en universo ampliado en los totales.
-        #    Sin este recompute los totales quedarían inconsistentes con
-        #    las filas de detalle mostradas.
-        #    ⚠️ Consecuencia esperada: CM Sint puede tener costos TC compra
-        #    sin GMV proporcional (NIDs escriturados de compra aún no vendidos).
+        # Sobrescribir TC Buyers Sintético (7 keys: 6 subcuentas + total) con
+        # re-agregación por date_of_sell_real_deed_financial SOBRE UNIVERSO
+        # COMPLETO (incluye NIDs escriturados de venta aún no facturados).
+        tcb_long = _tc_buyers_sint_by_deed_venta(df_prepared)
+        mask_stale_tcb = all_long["key"].isin(TC_BUYERS_SINT_KEYS)
+        all_long = all_long.loc[~mask_stale_tcb].copy()
+        all_long = pd.concat([all_long, tcb_long], ignore_index=True)
+
+        # 3) recalcular transaction_costs (afectado por nuevo tramites_sellers
+        #    y nuevo tramites_buyers) y direct_costs / unlevered_profit /
+        #    contribution_margin para reflejar Remo, TC Sellers Y TC Buyers en
+        #    universo ampliado en los totales. Sin este recompute los totales
+        #    quedarían inconsistentes con las filas de detalle mostradas.
+        #    ⚠️ Consecuencia esperada: CM Sint puede tener costos TC compra/venta
+        #    sin GMV proporcional (NIDs escriturados aún no facturados).
         all_long = _recompute_sint_totals(all_long)
         # 4) añadir count de NIDs remodelados por (region, mes_end_remo)
         nid_count = _remo_sint_nid_count_by_end_remo(df_prepared)
@@ -691,6 +790,9 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         # 5) añadir count de NIDs escriturados compra por (region, mes_deed_compra)
         nid_count_tcs = _tc_sellers_sint_nid_count_by_deed_compra(df_prepared)
         all_long = pd.concat([all_long, nid_count_tcs], ignore_index=True)
+        # 6) añadir count de NIDs escriturados venta por (region, mes_deed_venta)
+        nid_count_tcb = _tc_buyers_sint_nid_count_by_deed_venta(df_prepared)
+        all_long = pd.concat([all_long, nid_count_tcb], ignore_index=True)
 
     return all_long
 
