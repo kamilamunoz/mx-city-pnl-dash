@@ -83,6 +83,36 @@ TC_BUYERS_SINT_KEYS = (
     "tramites_buyers",
 )
 
+# Sublíneas de Commercial · buyers (comisiones que se devengan cuando se
+# compromete la venta al comprador final). Se re-agrupan por `date_psa_buyers`
+# (promesa de venta) sobre el UNIVERSO COMPLETO del tracker en vista Sintético.
+# NIDs sin promesa venta pero facturados → fallback a mes de facturación.
+# NIDs sin promesa venta y sin facturación → excluidos.
+COMMERCIAL_SINT_BUYERS_KEYS = (
+    "com_ext_buyers",
+    "com_int_buyers",
+)
+
+# Sublíneas de Commercial · sellers (comisiones que se devengan cuando se
+# compromete la compra al owner). Se re-agrupan por
+# `date_of_purchase_promise_financial` (promesa de compra) sobre el UNIVERSO
+# COMPLETO del tracker en vista Sintético.
+# NIDs sin promesa compra pero facturados → fallback a mes de facturación.
+# NIDs sin promesa compra y sin facturación → excluidos.
+COMMERCIAL_SINT_SELLERS_KEYS = (
+    "com_ext_sellers",
+    "com_int_sellers",
+)
+
+# Rollups de Commercial que se recomputan a partir de las 4 subcuentas
+# post re-agrupación. `external_commissions` = ext_buyers + ext_sellers,
+# `internal_commissions` = int_buyers + int_sellers, `commercial` = suma total.
+COMMERCIAL_SINT_ROLLUP_KEYS = (
+    "external_commissions",
+    "internal_commissions",
+    "commercial",
+)
+
 # Umbral de filas totales para colapsar en 'Otros'
 MIN_ROWS_PER_REGION = 50
 # Los NIDs con region NULL se asignan a EDO MEX (decisión operativa de Kamila,
@@ -244,6 +274,54 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     else:
         log.warning("date_of_sell_real_deed_financial no está en el raw — TC Buyers Sint caerá 100%% al fallback.")
         out["mes_deed_venta"] = out["mes"]
+
+    # Mes de promesa de venta al comprador — bucket para Commercial Buyers
+    # en vista Sintético. Fallback: NIDs sin promesa venta pero facturados →
+    # mes de facturación. NIDs sin promesa Y sin facturación → NaT (excluidos).
+    if "date_psa_buyers" in out.columns:
+        prom_b_dt = pd.to_datetime(out["date_psa_buyers"], errors="coerce")
+        prom_b_str = prom_b_dt.dt.to_period("M").astype(str)
+        fallback_pb_mask = prom_b_dt.isna() & out["facturado"]
+        n_fb_pb = int(fallback_pb_mask.sum())
+        n_sin_pb = int((prom_b_dt.isna() & ~out["facturado"]).sum())
+        if n_fb_pb > 0:
+            log.warning(
+                "Commercial Buyers Sintético: %d NIDs facturados sin date_psa_buyers → fallback a fecha_facturacion_venta.",
+                n_fb_pb,
+            )
+        if n_sin_pb > 0:
+            log.info(
+                "Commercial Buyers Sintético: %d NIDs sin promesa venta y sin facturación → excluidos.",
+                n_sin_pb,
+            )
+        out["mes_promesa_buyers"] = prom_b_str.where(~fallback_pb_mask, out["mes"])
+    else:
+        log.warning("date_psa_buyers no está en el raw — Commercial Buyers Sint caerá 100%% al fallback.")
+        out["mes_promesa_buyers"] = out["mes"]
+
+    # Mes de promesa de compra al owner — bucket para Commercial Sellers en
+    # vista Sintético. Fallback igual que promesa venta.
+    if "date_of_purchase_promise_financial" in out.columns:
+        prom_s_dt = pd.to_datetime(out["date_of_purchase_promise_financial"], errors="coerce")
+        prom_s_str = prom_s_dt.dt.to_period("M").astype(str)
+        fallback_ps_mask = prom_s_dt.isna() & out["facturado"]
+        n_fb_ps = int(fallback_ps_mask.sum())
+        n_sin_ps = int((prom_s_dt.isna() & ~out["facturado"]).sum())
+        if n_fb_ps > 0:
+            log.warning(
+                "Commercial Sellers Sintético: %d NIDs facturados sin date_of_purchase_promise_financial → fallback a fecha_facturacion_venta.",
+                n_fb_ps,
+            )
+        if n_sin_ps > 0:
+            log.info(
+                "Commercial Sellers Sintético: %d NIDs sin promesa compra y sin facturación → excluidos.",
+                n_sin_ps,
+            )
+        out["mes_promesa_sellers"] = prom_s_str.where(~fallback_ps_mask, out["mes"])
+    else:
+        log.warning("date_of_purchase_promise_financial no está en el raw — Commercial Sellers Sint caerá 100%% al fallback.")
+        out["mes_promesa_sellers"] = out["mes"]
+
     return out
 
 
@@ -548,6 +626,8 @@ def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
         df_use = df_prepared
     lines = _line_values(df_use, vista)
     wide = pd.DataFrame(lines)
+    wide.insert(0, "mes_promesa_sellers", df_use["mes_promesa_sellers"].values)
+    wide.insert(0, "mes_promesa_buyers", df_use["mes_promesa_buyers"].values)
     wide.insert(0, "mes_deed_venta", df_use["mes_deed_venta"].values)
     wide.insert(0, "mes_deed_compra", df_use["mes_deed_compra"].values)
     wide.insert(0, "mes_end_remo", df_use["mes_end_remo"].values)
@@ -707,6 +787,134 @@ def _tc_buyers_sint_nid_count_by_deed_venta(df_prepared: pd.DataFrame) -> pd.Dat
                       total[["region", "mes", "key", "valor"]]], ignore_index=True)
 
 
+def _commercial_sint_buyers_by_promise(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Re-agrega las 2 keys de Commercial Buyers (com_ext_buyers, com_int_buyers)
+    por (region, mes_promesa_buyers) sobre el UNIVERSO COMPLETO del tracker.
+
+    Devuelve long DF [region, mes, key, valor] donde `mes` es el mes de la
+    promesa de venta al comprador (con fallback fecha_facturacion_venta si
+    NULL y NID facturado). NIDs sin promesa y sin facturación quedan con
+    mes_promesa_buyers=NaT → excluidos del groupby.
+
+    Emite también la fila Total (todas las regiones) por mes.
+    """
+    lines = _line_values(df_prepared, "sintetico")
+    cols = list(COMMERCIAL_SINT_BUYERS_KEYS)
+    wide = pd.DataFrame({k: lines[k] for k in cols})
+    wide["region"] = df_prepared["region_norm"].values
+    wide["mes"] = df_prepared["mes_promesa_buyers"].values
+    wide = wide.loc[wide["mes"].notna() & (wide["mes"] != "NaT")].copy()
+
+    by_region = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
+    total = wide.drop(columns=["region"]).groupby("mes", as_index=False).sum(numeric_only=True)
+    total["region"] = "Total"
+
+    out = pd.concat([by_region, total], ignore_index=True)
+    return out.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
+
+
+def _commercial_sint_sellers_by_promise(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Re-agrega las 2 keys de Commercial Sellers (com_ext_sellers,
+    com_int_sellers) por (region, mes_promesa_sellers) sobre el UNIVERSO
+    COMPLETO del tracker.
+
+    Devuelve long DF [region, mes, key, valor] donde `mes` es el mes de la
+    promesa de compra al owner (con fallback fecha_facturacion_venta si NULL
+    y NID facturado). NIDs sin promesa y sin facturación quedan con
+    mes_promesa_sellers=NaT → excluidos del groupby.
+
+    Emite también la fila Total (todas las regiones) por mes.
+    """
+    lines = _line_values(df_prepared, "sintetico")
+    cols = list(COMMERCIAL_SINT_SELLERS_KEYS)
+    wide = pd.DataFrame({k: lines[k] for k in cols})
+    wide["region"] = df_prepared["region_norm"].values
+    wide["mes"] = df_prepared["mes_promesa_sellers"].values
+    wide = wide.loc[wide["mes"].notna() & (wide["mes"] != "NaT")].copy()
+
+    by_region = wide.groupby(["region", "mes"], as_index=False).sum(numeric_only=True)
+    total = wide.drop(columns=["region"]).groupby("mes", as_index=False).sum(numeric_only=True)
+    total["region"] = "Total"
+
+    out = pd.concat([by_region, total], ignore_index=True)
+    return out.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
+
+
+def _commercial_sint_rollups_from_subs(all_long: pd.DataFrame) -> pd.DataFrame:
+    """Recomputa external_commissions, internal_commissions y commercial a
+    partir de las 4 subcuentas ya re-agrupadas en el long (Sintético).
+
+      external_commissions = com_ext_buyers + com_ext_sellers
+      internal_commissions = com_int_buyers + com_int_sellers
+      commercial           = external_commissions + internal_commissions
+
+    Devuelve long DF con las 3 nuevas filas por (region, mes). El caller es
+    responsable de borrar los rollups viejos antes de concatenar.
+    """
+    subs = ("com_ext_buyers", "com_ext_sellers", "com_int_buyers", "com_int_sellers")
+    wide = all_long.loc[all_long["key"].isin(subs)].pivot_table(
+        index=["region", "mes"], columns="key", values="valor",
+        aggfunc="sum", fill_value=0.0,
+    )
+    ext_b = wide.get("com_ext_buyers", 0.0)
+    ext_s = wide.get("com_ext_sellers", 0.0)
+    int_b = wide.get("com_int_buyers", 0.0)
+    int_s = wide.get("com_int_sellers", 0.0)
+    ext = ext_b + ext_s
+    intr = int_b + int_s
+    com = ext + intr
+
+    rollups = pd.DataFrame({
+        "external_commissions": ext,
+        "internal_commissions": intr,
+        "commercial": com,
+    }).reset_index().melt(
+        id_vars=["region", "mes"], var_name="key", value_name="valor",
+    )
+    return rollups
+
+
+def _commercial_sint_nid_count_buyers(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Cuenta NIDs con `date_psa_buyers` en cada (region, mes_promesa_buyers).
+
+    Se usa para el tooltip "# NIDs con promesa venta este mes: N" en el
+    drill/hover de las filas Commercial Buyers Sintético.
+    """
+    df = df_prepared[["region_norm", "mes_promesa_buyers"]].copy()
+    df.columns = ["region", "mes"]
+    df = df.loc[df["mes"].notna() & (df["mes"] != "NaT")].copy()
+    by_region = df.groupby(["region", "mes"]).size().reset_index(name="valor")
+    by_region["key"] = "commercial_buyers_nid_count"
+
+    total = df.groupby("mes").size().reset_index(name="valor")
+    total["region"] = "Total"
+    total["key"] = "commercial_buyers_nid_count"
+
+    return pd.concat([by_region[["region", "mes", "key", "valor"]],
+                      total[["region", "mes", "key", "valor"]]], ignore_index=True)
+
+
+def _commercial_sint_nid_count_sellers(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Cuenta NIDs con `date_of_purchase_promise_financial` en cada
+    (region, mes_promesa_sellers).
+
+    Se usa para el tooltip "# NIDs con promesa compra este mes: N" en el
+    drill/hover de las filas Commercial Sellers Sintético.
+    """
+    df = df_prepared[["region_norm", "mes_promesa_sellers"]].copy()
+    df.columns = ["region", "mes"]
+    df = df.loc[df["mes"].notna() & (df["mes"] != "NaT")].copy()
+    by_region = df.groupby(["region", "mes"]).size().reset_index(name="valor")
+    by_region["key"] = "commercial_sellers_nid_count"
+
+    total = df.groupby("mes").size().reset_index(name="valor")
+    total["region"] = "Total"
+    total["key"] = "commercial_sellers_nid_count"
+
+    return pd.concat([by_region[["region", "mes", "key", "valor"]],
+                      total[["region", "mes", "key", "valor"]]], ignore_index=True)
+
+
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     """Devuelve DataFrame long: columnas [region, mes, key, valor].
 
@@ -776,13 +984,33 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         all_long = all_long.loc[~mask_stale_tcb].copy()
         all_long = pd.concat([all_long, tcb_long], ignore_index=True)
 
+        # Sobrescribir Commercial Sintético — 4 subcuentas + 3 rollups.
+        # Buyers (com_ext_buyers + com_int_buyers) por `date_psa_buyers` y
+        # sellers (com_ext_sellers + com_int_sellers) por
+        # `date_of_purchase_promise_financial`, ambos sobre UNIVERSO COMPLETO.
+        # Los rollups external_commissions / internal_commissions / commercial
+        # se recomputan de las subcuentas ya re-agrupadas.
+        com_b_long = _commercial_sint_buyers_by_promise(df_prepared)
+        com_s_long = _commercial_sint_sellers_by_promise(df_prepared)
+        mask_stale_com_subs = all_long["key"].isin(
+            list(COMMERCIAL_SINT_BUYERS_KEYS) + list(COMMERCIAL_SINT_SELLERS_KEYS)
+        )
+        all_long = all_long.loc[~mask_stale_com_subs].copy()
+        all_long = pd.concat([all_long, com_b_long, com_s_long], ignore_index=True)
+        # Recomputar los 3 rollups con las subcuentas re-agrupadas.
+        com_rollups = _commercial_sint_rollups_from_subs(all_long)
+        mask_stale_com_rollups = all_long["key"].isin(COMMERCIAL_SINT_ROLLUP_KEYS)
+        all_long = all_long.loc[~mask_stale_com_rollups].copy()
+        all_long = pd.concat([all_long, com_rollups], ignore_index=True)
+
         # 3) recalcular transaction_costs (afectado por nuevo tramites_sellers
         #    y nuevo tramites_buyers) y direct_costs / unlevered_profit /
-        #    contribution_margin para reflejar Remo, TC Sellers Y TC Buyers en
-        #    universo ampliado en los totales. Sin este recompute los totales
-        #    quedarían inconsistentes con las filas de detalle mostradas.
+        #    contribution_margin para reflejar Remo, TC Sellers, TC Buyers Y
+        #    Commercial en universo ampliado en los totales. Sin este recompute
+        #    los totales quedarían inconsistentes con las filas de detalle.
         #    ⚠️ Consecuencia esperada: CM Sint puede tener costos TC compra/venta
-        #    sin GMV proporcional (NIDs escriturados aún no facturados).
+        #    o comisiones sin GMV proporcional (NIDs escriturados/prometidos aún
+        #    no facturados).
         all_long = _recompute_sint_totals(all_long)
         # 4) añadir count de NIDs remodelados por (region, mes_end_remo)
         nid_count = _remo_sint_nid_count_by_end_remo(df_prepared)
@@ -793,6 +1021,10 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         # 6) añadir count de NIDs escriturados venta por (region, mes_deed_venta)
         nid_count_tcb = _tc_buyers_sint_nid_count_by_deed_venta(df_prepared)
         all_long = pd.concat([all_long, nid_count_tcb], ignore_index=True)
+        # 7) counts NIDs con promesa compra/venta para tooltips Commercial
+        nid_count_cb = _commercial_sint_nid_count_buyers(df_prepared)
+        nid_count_cs = _commercial_sint_nid_count_sellers(df_prepared)
+        all_long = pd.concat([all_long, nid_count_cb, nid_count_cs], ignore_index=True)
 
     return all_long
 
@@ -800,7 +1032,12 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
 def _recompute_sint_totals(all_long: pd.DataFrame) -> pd.DataFrame:
     """Recomputa transaction_costs, direct_costs, unlevered_profit y
     contribution_margin en el long de Sintético después de sobreescribir
-    Remo Y/O TC Sellers con universo completo.
+    Remo, TC Sellers, TC Buyers y/o Commercial con universo completo.
+
+    Asume que el long ya trae los rubros ya re-agrupados por su driver
+    operacional (remodeling por end_remo, tramites_sellers por deed_compra,
+    tramites_buyers por deed_venta, commercial por promesa buyers/sellers).
+    Este helper solo suma esos rubros a los totales.
 
     Fórmulas (mismo signo que _line_values):
       transaction_costs   = tramites_sellers + tramites_buyers

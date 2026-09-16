@@ -671,6 +671,18 @@ def main() -> None:
         "tramites_buyers",
     ]
 
+    # Keys de Commercial · buyers que en Sintético drillean por
+    # mes_promesa_buyers (date_psa_buyers).
+    commercial_buyers_sint_drill_keys = [
+        "com_ext_buyers", "com_int_buyers",
+    ]
+
+    # Keys de Commercial · sellers que en Sintético drillean por
+    # mes_promesa_sellers (date_of_purchase_promise_financial).
+    commercial_sellers_sint_drill_keys = [
+        "com_ext_sellers", "com_int_sellers",
+    ]
+
     # Sanitizer: convierte NaN/NaT/None a None (JSON null). Necesario tras
     # ampliar universo Remo Sint a NIDs no facturados (mes/mes_end_remo pueden
     # ser NaN). Sin esto, .astype(str) sobre columnas con NaN emite el literal
@@ -706,6 +718,8 @@ def main() -> None:
         meses_endremo = [_san_str(v) for v in per_nid["mes_end_remo"].tolist()]
         meses_deedcompra = [_san_str(v) for v in per_nid["mes_deed_compra"].tolist()]
         meses_deedventa = [_san_str(v) for v in per_nid["mes_deed_venta"].tolist()]
+        meses_promesa_b = [_san_str(v) for v in per_nid["mes_promesa_buyers"].tolist()]
+        meses_promesa_s = [_san_str(v) for v in per_nid["mes_promesa_sellers"].tolist()]
         matriz = []
         for k in line_keys:
             if k in per_nid.columns:
@@ -721,17 +735,22 @@ def main() -> None:
             "mes": meses_,
             "mes_end_remo": meses_endremo,  # mes de cierre remo (fallback a mes)
             "mes_deed_compra": meses_deedcompra,  # mes escritura compra Habi (fallback a mes)
-            "mes_deed_venta": meses_deedventa,  # NEW: mes escritura venta Habi (fallback a mes)
+            "mes_deed_venta": meses_deedventa,  # mes escritura venta Habi (fallback a mes)
+            "mes_promesa_buyers": meses_promesa_b,  # mes promesa venta (Commercial buyers, fallback a mes)
+            "mes_promesa_sellers": meses_promesa_s,  # mes promesa compra (Commercial sellers, fallback a mes)
             # matriz [linea][nid_idx] → val
             "valores": matriz,
         }
         # Solo en vista Sintético las líneas de Remo drillean por end_remo,
-        # las de TC Sellers por deed_compra y las de TC Buyers por deed_venta.
-        # ACC no tiene estas columnas en su payload (agrupación intacta).
+        # las de TC Sellers por deed_compra, TC Buyers por deed_venta, y las
+        # Commercial por promesa buyers/sellers. ACC no tiene estas columnas
+        # en su payload (agrupación intacta por fecha_facturacion_venta).
         if vista == "sintetico":
             facts_payload[vista]["drill_por_end_remo"] = remo_sint_drill_keys
             facts_payload[vista]["drill_por_deed_compra"] = tc_sellers_sint_drill_keys
             facts_payload[vista]["drill_por_deed_venta"] = tc_buyers_sint_drill_keys
+            facts_payload[vista]["drill_por_promesa_buyers"] = commercial_buyers_sint_drill_keys
+            facts_payload[vista]["drill_por_promesa_sellers"] = commercial_sellers_sint_drill_keys
 
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
         # allow_nan=False para que crashee temprano si un NaN residual sobrevive

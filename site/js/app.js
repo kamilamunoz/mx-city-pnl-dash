@@ -385,6 +385,22 @@ function renderTable() {
           cellEl.title = `# NIDs remodelados este mes: ${nInt.toLocaleString('es-MX')}\n(agrupados por end_remo, no por mes de facturación)`;
         }
       }
+      // Tooltip Commercial Sintético: # NIDs con promesa (buyers→venta, sellers→compra)
+      // en el mes. Las comisiones se re-agrupan por promesa, no por facturación.
+      if (state.vista === 'sintetico' && val !== null) {
+        const cellData = dataRegion[m] || {};
+        if (row.key === 'com_ext_buyers' || row.key === 'com_int_buyers') {
+          const n = cellData['commercial_buyers_nid_count'];
+          if (n !== undefined && n !== null) {
+            cellEl.title = `# NIDs con promesa venta este mes: ${Math.round(n).toLocaleString('es-MX')}\n(agrupados por date_psa_buyers, no por facturación)`;
+          }
+        } else if (row.key === 'com_ext_sellers' || row.key === 'com_int_sellers') {
+          const n = cellData['commercial_sellers_nid_count'];
+          if (n !== undefined && n !== null) {
+            cellEl.title = `# NIDs con promesa compra este mes: ${Math.round(n).toLocaleString('es-MX')}\n(agrupados por date_of_purchase_promise_financial, no por facturación)`;
+          }
+        }
+      }
 
       // Líneas externas (payroll/rent/marketing/local_opex/net_contrib) no drillean
       const drillable = !NON_DRILLABLE.has(row.key)
@@ -446,20 +462,25 @@ function openDrill(row, mes) {
 
   // Vista Sintético: las 6 keys de Remo drillean por mes_end_remo (mes en que
   // se cerró la remodelación), las 7 keys de TC Sellers (compra) drillean
-  // por mes_deed_compra (mes en que Habi escrituró de compra), y las 7 keys
-  // de TC Buyers (venta) drillean por mes_deed_venta (mes en que Habi
-  // escrituró de venta), en vez de mes de facturación. Ver
-  // `drill_por_end_remo` / `drill_por_deed_compra` / `drill_por_deed_venta`
-  // en el payload de facts (escrito por refresh_data.py).
+  // por mes_deed_compra (mes en que Habi escrituró de compra), las 7 keys de
+  // TC Buyers (venta) por mes_deed_venta, y las 4 keys de Commercial drillean
+  // por promesa (buyers→date_psa_buyers, sellers→date_of_purchase_promise_financial),
+  // en vez de mes de facturación. Ver `drill_por_*` en el payload de facts.
   const drillPorEndRemo = new Set(facts.drill_por_end_remo || []);
   const drillPorDeedCompra = new Set(facts.drill_por_deed_compra || []);
   const drillPorDeedVenta = new Set(facts.drill_por_deed_venta || []);
+  const drillPorPromesaBuyers = new Set(facts.drill_por_promesa_buyers || []);
+  const drillPorPromesaSellers = new Set(facts.drill_por_promesa_sellers || []);
   const usarEndRemo = drillPorEndRemo.has(row.key) && Array.isArray(facts.mes_end_remo);
   const usarDeedCompra = drillPorDeedCompra.has(row.key) && Array.isArray(facts.mes_deed_compra);
   const usarDeedVenta = drillPorDeedVenta.has(row.key) && Array.isArray(facts.mes_deed_venta);
+  const usarPromesaBuyers = drillPorPromesaBuyers.has(row.key) && Array.isArray(facts.mes_promesa_buyers);
+  const usarPromesaSellers = drillPorPromesaSellers.has(row.key) && Array.isArray(facts.mes_promesa_sellers);
   const mesArr = usarEndRemo ? facts.mes_end_remo
               : usarDeedCompra ? facts.mes_deed_compra
               : usarDeedVenta ? facts.mes_deed_venta
+              : usarPromesaBuyers ? facts.mes_promesa_buyers
+              : usarPromesaSellers ? facts.mes_promesa_sellers
               : facts.mes;
 
   const items = [];
@@ -486,12 +507,12 @@ function openDrill(row, mes) {
   const alertSum = items.filter(x => isAlert(x.valor)).reduce((s, x) => s + x.valor, 0);
 
   const ctxBase = state.region === 'Total' ? `Todas las regiones · ${mes}` : `${state.region} · ${mes}`;
-  // Sufijo aclaratorio para Remo Sintético (por end_remo), TC Sellers Sint
-  // (por date_of_purchase_real_deed_financial) o TC Buyers Sint (por
-  // date_of_sell_real_deed_financial).
+  // Sufijo aclaratorio según el driver del Sintético para esta línea.
   const ctxSuf = usarEndRemo ? ' · NIDs remodelados este mes (end_remo)'
               : usarDeedCompra ? ' · NIDs escriturados compra este mes (deed_compra)'
               : usarDeedVenta ? ' · NIDs escriturados venta este mes (deed_venta)'
+              : usarPromesaBuyers ? ' · NIDs con promesa venta este mes (date_psa_buyers)'
+              : usarPromesaSellers ? ' · NIDs con promesa compra este mes (promesa_compra)'
               : '';
   const ctx = ctxBase + ctxSuf;
   document.getElementById('drillContext').textContent = ctx;
