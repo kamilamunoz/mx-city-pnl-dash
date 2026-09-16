@@ -340,6 +340,27 @@ td.expandable:hover { background: #f3edff; }
 .footnote code { color: var(--habi); background: var(--habi-soft); padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; }
 .footnote b { color: var(--text-strong); }
 
+.vista-nota {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: var(--habi-soft);
+  border-left: 3px solid var(--habi);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+.vista-nota > summary {
+  cursor: pointer;
+  color: var(--habi-dark);
+  font-weight: 600;
+  user-select: none;
+}
+.vista-nota ul { margin: 8px 0 0 18px; padding: 0; }
+.vista-nota li { margin: 4px 0; line-height: 1.5; }
+.vista-nota ul ul { margin-top: 4px; }
+.vista-nota code { background: var(--paper); color: var(--habi-dark); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.vista-nota b { color: var(--text-strong); }
+
 /* ─── comparativa: insights ─── */
 .insights {
   display: grid;
