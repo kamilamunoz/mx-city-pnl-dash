@@ -401,6 +401,16 @@ function renderTable() {
           }
         }
       }
+      // Tooltip Holding Sintético: # NIDs vivos en holding ese mes (prorrateo
+      // diario del gasto total entre deed compra y venta / hoy).
+      if (state.vista === 'sintetico' && val !== null &&
+          (row.key === 'hol_admin' || row.key === 'hol_limpieza' ||
+           row.key === 'hol_utilities' || row.key === 'hol_predial' || row.key === 'holding')) {
+        const n = (dataRegion[m] || {})['holding_nid_count'];
+        if (n !== undefined && n !== null) {
+          cellEl.title = `# NIDs en holding este mes: ${Math.round(n).toLocaleString('es-MX')}\n(prorrateo diario del gasto entre deed compra y venta/hoy)`;
+        }
+      }
 
       // Líneas externas (payroll/rent/marketing/local_opex/net_contrib) no drillean
       const drillable = !NON_DRILLABLE.has(row.key)
@@ -471,11 +481,13 @@ function openDrill(row, mes) {
   const drillPorDeedVenta = new Set(facts.drill_por_deed_venta || []);
   const drillPorPromesaBuyers = new Set(facts.drill_por_promesa_buyers || []);
   const drillPorPromesaSellers = new Set(facts.drill_por_promesa_sellers || []);
+  const drillPorHolding = new Set(facts.drill_por_holding || []);
   const usarEndRemo = drillPorEndRemo.has(row.key) && Array.isArray(facts.mes_end_remo);
   const usarDeedCompra = drillPorDeedCompra.has(row.key) && Array.isArray(facts.mes_deed_compra);
   const usarDeedVenta = drillPorDeedVenta.has(row.key) && Array.isArray(facts.mes_deed_venta);
   const usarPromesaBuyers = drillPorPromesaBuyers.has(row.key) && Array.isArray(facts.mes_promesa_buyers);
   const usarPromesaSellers = drillPorPromesaSellers.has(row.key) && Array.isArray(facts.mes_promesa_sellers);
+  const usarHolding = drillPorHolding.has(row.key) && Array.isArray(facts.holding_inicio) && Array.isArray(facts.holding_fin);
   const mesArr = usarEndRemo ? facts.mes_end_remo
               : usarDeedCompra ? facts.mes_deed_compra
               : usarDeedVenta ? facts.mes_deed_venta
@@ -485,14 +497,46 @@ function openDrill(row, mes) {
 
   const items = [];
   const totalNids = facts.nid.length;
-  for (let i = 0; i < totalNids; i++) {
-    const matchRegion = (state.region === 'Total') || (facts.region[i] === state.region);
-    const matchMes = mesArr[i] === mes;
-    if (!matchRegion || !matchMes) continue;
-    const v = facts.valores[colIdx][i];
-    if (v === 0) continue;
-    const gmv = gmvIdx >= 0 ? facts.valores[gmvIdx][i] : 0;
-    items.push({ nid: facts.nid[i], region: facts.region[i], valor: v, gmv });
+  if (usarHolding) {
+    // Drill Sint Holding: filtra NIDs vivos en holding ese mes (holding_inicio
+    // <= mes_end AND holding_fin >= mes_start) y calcula el monto prorrateado
+    // = valor_total * dias_del_NID_en_mes / dias_totales_holding.
+    const [y, mo] = mes.split('-').map(Number);
+    const mesStart = new Date(Date.UTC(y, mo - 1, 1));
+    const mesEnd = new Date(Date.UTC(y, mo, 0));  // último día del mes
+    const MS_DAY = 86400000;
+    for (let i = 0; i < totalNids; i++) {
+      const matchRegion = (state.region === 'Total') || (facts.region[i] === state.region);
+      if (!matchRegion) continue;
+      const iniStr = facts.holding_inicio[i];
+      const finStr = facts.holding_fin[i];
+      if (!iniStr || !finStr) continue;
+      const ini = new Date(iniStr + 'T00:00:00Z');
+      const fin = new Date(finStr + 'T00:00:00Z');
+      if (ini > mesEnd || fin < mesStart) continue;
+      const left = ini > mesStart ? ini : mesStart;
+      const right = fin < mesEnd ? fin : mesEnd;
+      const diasEnMes = Math.round((right - left) / MS_DAY) + 1;
+      const diasTot = Math.round((fin - ini) / MS_DAY) + 1;
+      if (diasTot <= 0) continue;
+      const vTotal = facts.valores[colIdx][i];
+      if (vTotal === 0) continue;
+      const vProrr = vTotal * (diasEnMes / diasTot);
+      if (vProrr === 0) continue;
+      const gmv = gmvIdx >= 0 ? facts.valores[gmvIdx][i] : 0;
+      items.push({ nid: facts.nid[i], region: facts.region[i], valor: vProrr, gmv,
+                   _diasEnMes: diasEnMes, _diasTot: diasTot });
+    }
+  } else {
+    for (let i = 0; i < totalNids; i++) {
+      const matchRegion = (state.region === 'Total') || (facts.region[i] === state.region);
+      const matchMes = mesArr[i] === mes;
+      if (!matchRegion || !matchMes) continue;
+      const v = facts.valores[colIdx][i];
+      if (v === 0) continue;
+      const gmv = gmvIdx >= 0 ? facts.valores[gmvIdx][i] : 0;
+      items.push({ nid: facts.nid[i], region: facts.region[i], valor: v, gmv });
+    }
   }
 
   items.sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor));
@@ -513,6 +557,7 @@ function openDrill(row, mes) {
               : usarDeedVenta ? ' · NIDs escriturados venta este mes (deed_venta)'
               : usarPromesaBuyers ? ' · NIDs con promesa venta este mes (date_psa_buyers)'
               : usarPromesaSellers ? ' · NIDs con promesa compra este mes (promesa_compra)'
+              : usarHolding ? ' · NIDs en holding este mes (prorrateo diario deed_sellers→deed_buyers/hoy)'
               : '';
   const ctx = ctxBase + ctxSuf;
   document.getElementById('drillContext').textContent = ctx;

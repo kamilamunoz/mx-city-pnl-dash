@@ -101,6 +101,13 @@ select
     holding_administracion_accounting,
     holding_servicios_publicos_accounting,
     holding_predial_accounting,
+    -- columnas para Holding Sintético: prorrateo diario del gasto contable
+    -- entre deed compra y deed venta (o fecha_reversion si Recomprado, o
+    -- CURRENT_DATE si vivo). Naming del query autoritativo de Kamila.
+    date_deed_sellers,
+    date_deed_buyers,
+    estatus,
+    fecha_reversion,
     comisiones_sellers_interna,
     first_upload_to_web,
     case

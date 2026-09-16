@@ -683,6 +683,13 @@ def main() -> None:
         "com_ext_sellers", "com_int_sellers",
     ]
 
+    # Keys de Holding que en Sintético drillean por prorrateo NID×mes:
+    # frontend calcula (dias_en_mes / dias_totales) × monto_total al abrir
+    # el drill de una celda holding para (region, mes).
+    holding_sint_drill_keys = [
+        "hol_admin", "hol_limpieza", "hol_utilities", "hol_predial", "holding",
+    ]
+
     # Sanitizer: convierte NaN/NaT/None a None (JSON null). Necesario tras
     # ampliar universo Remo Sint a NIDs no facturados (mes/mes_end_remo pueden
     # ser NaN). Sin esto, .astype(str) sobre columnas con NaN emite el literal
@@ -720,6 +727,22 @@ def main() -> None:
         meses_deedventa = [_san_str(v) for v in per_nid["mes_deed_venta"].tolist()]
         meses_promesa_b = [_san_str(v) for v in per_nid["mes_promesa_buyers"].tolist()]
         meses_promesa_s = [_san_str(v) for v in per_nid["mes_promesa_sellers"].tolist()]
+        # holding_inicio / holding_fin como YYYY-MM-DD strings (fecha completa,
+        # no solo mes) para que el frontend calcule días exactos por mes.
+        def _san_date(v):
+            if v is None:
+                return None
+            try:
+                if pd.isna(v):
+                    return None
+            except (TypeError, ValueError):
+                pass
+            try:
+                return pd.Timestamp(v).strftime("%Y-%m-%d")
+            except (TypeError, ValueError):
+                return None
+        holding_inicio_arr = [_san_date(v) for v in per_nid["holding_inicio"].tolist()]
+        holding_fin_arr = [_san_date(v) for v in per_nid["holding_fin"].tolist()]
         matriz = []
         for k in line_keys:
             if k in per_nid.columns:
@@ -738,19 +761,23 @@ def main() -> None:
             "mes_deed_venta": meses_deedventa,  # mes escritura venta Habi (fallback a mes)
             "mes_promesa_buyers": meses_promesa_b,  # mes promesa venta (Commercial buyers, fallback a mes)
             "mes_promesa_sellers": meses_promesa_s,  # mes promesa compra (Commercial sellers, fallback a mes)
+            "holding_inicio": holding_inicio_arr,  # YYYY-MM-DD (para drill Sint holding NID×fracción)
+            "holding_fin": holding_fin_arr,  # YYYY-MM-DD
             # matriz [linea][nid_idx] → val
             "valores": matriz,
         }
         # Solo en vista Sintético las líneas de Remo drillean por end_remo,
-        # las de TC Sellers por deed_compra, TC Buyers por deed_venta, y las
-        # Commercial por promesa buyers/sellers. ACC no tiene estas columnas
-        # en su payload (agrupación intacta por fecha_facturacion_venta).
+        # las de TC Sellers por deed_compra, TC Buyers por deed_venta,
+        # Commercial por promesa buyers/sellers, y Holding por prorrateo
+        # diario NID×mes (frontend calcula fracción con holding_inicio/_fin).
+        # ACC no usa estas keys.
         if vista == "sintetico":
             facts_payload[vista]["drill_por_end_remo"] = remo_sint_drill_keys
             facts_payload[vista]["drill_por_deed_compra"] = tc_sellers_sint_drill_keys
             facts_payload[vista]["drill_por_deed_venta"] = tc_buyers_sint_drill_keys
             facts_payload[vista]["drill_por_promesa_buyers"] = commercial_buyers_sint_drill_keys
             facts_payload[vista]["drill_por_promesa_sellers"] = commercial_sellers_sint_drill_keys
+            facts_payload[vista]["drill_por_holding"] = holding_sint_drill_keys
 
     with open(OUT_FACTS_PATH, "w", encoding="utf-8") as f:
         # allow_nan=False para que crashee temprano si un NaN residual sobrevive

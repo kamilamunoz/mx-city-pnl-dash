@@ -120,7 +120,8 @@
           <li>TC Venta → <code>date_of_sell_real_deed_financial</code> (mes de escritura de venta)</li>
           <li>Comisiones Buyers → <code>date_psa_buyers</code> (promesa venta al comprador)</li>
           <li>Comisiones Sellers → <code>date_of_purchase_promise_financial</code> (promesa compra del owner)</li>
-          <li>Holding / Financing → sin driver operacional propio aún (agrupan por facturación)</li>
+          <li>Holding → prorrateo diario del gasto contable entre <code>date_deed_sellers</code> (compra) y <code>date_deed_buyers</code>/hoy (venta o vivo). Reconciliado con inventario financiero de Ivy (<code>inv_financiero_backlog=1 OR inv_v_promesa_escritura_salida_escritura=1</code>), gap &lt;2%.</li>
+          <li>Financing → sin driver operacional propio aún (agrupa por facturación)</li>
         </ul>
       </li>
       <li><b>CM no es reconciliable línea-a-línea entre las dos vistas</b>: los denominadores (# NIDs por mes) son distintos porque cada línea usa su propio driver.</li>
@@ -335,6 +336,6 @@
   </div>
 </aside>
 
-<script src="js/app.js?v=2026-09-16-commercial-sint"></script>
+<script src="js/app.js?v=2026-09-17-holding-sint"></script>
 </body>
 </html>

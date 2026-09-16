@@ -113,6 +113,20 @@ COMMERCIAL_SINT_ROLLUP_KEYS = (
     "commercial",
 )
 
+# Sublíneas de Holding que en vista Sintético se re-agrupan por prorrateo
+# diario del gasto `_accounting` entre `date_deed_sellers` (compra Habi) y
+# `IFNULL(date_deed_buyers, IF estatus='Recomprado' THEN fecha_reversion,
+# CURRENT_DATE())`. Un NID con N días de holding contribuye a cada mes m con
+# `gasto_total * dias_del_NID_en_m / N`. Alarmas queda en Seguridad, no se
+# subsume aquí (decisión Kamila 2026-09-16).
+HOLDING_SINT_KEYS = (
+    "hol_admin",
+    "hol_limpieza",
+    "hol_utilities",
+    "hol_predial",
+    "holding",
+)
+
 # Umbral de filas totales para colapsar en 'Otros'
 MIN_ROWS_PER_REGION = 50
 # Los NIDs con region NULL se asignan a EDO MEX (decisión operativa de Kamila,
@@ -321,6 +335,48 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     else:
         log.warning("date_of_purchase_promise_financial no está en el raw — Commercial Sellers Sint caerá 100%% al fallback.")
         out["mes_promesa_sellers"] = out["mes"]
+
+    # Rango de holding — regla escritura-a-escritura validada con Ivy
+    # (`inv_financiero_backlog=1 OR inv_v_promesa_escritura_salida_escritura=1`):
+    #   inicio = date_deed_sellers (compra Habi) si existe,
+    #            sino fecha_facturacion_venta como fallback (captura NIDs con
+    #            factura pero sin escritura de compra formal — Ivy los incluye
+    #            via la condición promesa_escritura_salida_escritura).
+    #   fin    = date_deed_buyers (venta Habi) si existe, sino hoy.
+    # NIDs sin ni deed_sellers ni fecha_facturacion_venta → sin rango, excluidos.
+    # Con esta regla el gap vs backlog Ivy jul-2026 es ~+2% (16 NIDs por 954
+    # totales), overshoot esperado por recomprados no-readquiridos que Habi
+    # devolvió al owner (no están en libros Ivy pero sí en rango escritura).
+    today = pd.Timestamp.today().normalize()
+    if "date_deed_sellers" in out.columns:
+        ini_deed = pd.to_datetime(out["date_deed_sellers"], errors="coerce").dt.normalize()
+    else:
+        log.warning("date_deed_sellers no está en el raw — Holding Sint caerá 100%% al fallback fecha_facturacion_venta.")
+        ini_deed = pd.Series(pd.NaT, index=out.index)
+    ini_fac = pd.to_datetime(out["fecha_facturacion_venta"], errors="coerce").dt.normalize()
+    inicio = ini_deed.where(ini_deed.notna(), ini_fac)
+
+    if "date_deed_buyers" in out.columns:
+        fin_deed = pd.to_datetime(out["date_deed_buyers"], errors="coerce").dt.normalize()
+    else:
+        fin_deed = pd.Series(pd.NaT, index=out.index)
+    fin = fin_deed.where(fin_deed.notna(), today)
+
+    out["holding_inicio"] = inicio
+    out["holding_fin"] = fin
+    n_ini_deed = int(ini_deed.notna().sum())
+    n_ini_solo_fac = int((ini_deed.isna() & ini_fac.notna()).sum())
+    n_sin_inicio = int(inicio.isna().sum())
+    n_vivos = int((fin_deed.isna() & inicio.notna()).sum())
+    log.info(
+        "Holding Sint: universo=%d NIDs (con deed compra=%d, solo con factura=%d) · vendidos=%d · vivos hasta hoy=%d · excluidos sin fecha=%d",
+        int(inicio.notna().sum()),
+        n_ini_deed,
+        n_ini_solo_fac,
+        int(fin_deed.notna().sum()),
+        n_vivos,
+        n_sin_inicio,
+    )
 
     return out
 
@@ -557,18 +613,36 @@ def _line_values(df: pd.DataFrame, vista: str) -> dict[str, pd.Series]:
     # están dentro de Trámites Buyers → double-counting. Se omite.
 
     # ── holding ──
-    lines["hol_admin"] = -pick("holding_administracion_ue", "holding_administracion_accounting")
-    lines["hol_limpieza"] = -pick("holding_limpieza_ue", "holding_limpieza_ACCOUNTING")
-    lines["hol_utilities"] = -pick("holding_servicios_publicos_ue", "holding_servicios_publicos_accounting")
-    lines["hol_predial"] = -pick("holding_predial_ue", "holding_predial_accounting")
+    # ACC: `_accounting` agrupado por fac venta (todo el gasto cae en el mes
+    # de facturación de venta).
+    # Sint: `_accounting` puro (mismo total por-NID); el pipeline reescribe
+    # `HOLDING_SINT_KEYS` en aggregate_all_regions con `_holding_sint_by_prorrateo`
+    # que divide el total por día entre deed compra y venta/hoy. Antes usaba
+    # coalesce `_ue`→`_accounting` fila-a-fila, pero el pipeline prorrateaba
+    # `_accounting` puro y creaba mismatch en el drill (frontend leía `_ue`,
+    # backend prorrateaba `_accounting`). Fix 2026-09-17.
+    lines["hol_admin"] = -_num(df["holding_administracion_accounting"])
+    lines["hol_limpieza"] = -_num(df["holding_limpieza_ACCOUNTING"])
+    lines["hol_utilities"] = -_num(df["holding_servicios_publicos_accounting"])
+    lines["hol_predial"] = -_num(df["holding_predial_accounting"])
     lines["holding"] = (
         lines["hol_admin"] + lines["hol_limpieza"] + lines["hol_utilities"] + lines["hol_predial"]
     )
 
     # ── seguridad ──
-    #  ACC usa alarmas_accounting; SINTETICO usa total_alarmas_model
+    #  ACC: usa `alarmas_accounting` directo (contable real).
+    #  Sint: usa `total_alarmas_model` cuando trae valor >0; si es 0/NaN (modelo
+    #  no poblado, aparece frecuentemente en meses recientes) cae a
+    #  `alarmas_accounting` fila-a-fila. Sin el fallback la línea Sint completa
+    #  quedaba en $0. Fix 2026-09-17.
     if is_sint:
-        lines["seg_alarmas"] = -_num(df["total_alarmas_model"])
+        # Cast a float64 explícito: `total_alarmas_model` viene como Int64
+        # nullable en el parquet y el `.where(cond, float_series)` truena si
+        # intenta preservar el dtype Int.
+        ue = pd.to_numeric(df["total_alarmas_model"], errors="coerce").astype("float64")
+        acc = pd.to_numeric(df["alarmas_accounting"], errors="coerce").astype("float64")
+        use_ue = ue.notna() & (ue != 0)
+        lines["seg_alarmas"] = -(ue.where(use_ue, acc).fillna(0.0))
     else:
         lines["seg_alarmas"] = -_num(df["alarmas_accounting"])
     lines["seguridad"] = lines["seg_alarmas"]
@@ -626,6 +700,11 @@ def line_values_per_nid(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
         df_use = df_prepared
     lines = _line_values(df_use, vista)
     wide = pd.DataFrame(lines)
+    # Rango de holding por-NID (para drill Sint que prorratea el monto total
+    # según los días del NID en holding dentro del mes seleccionado). En vista
+    # ACC estas columnas también viajan (informativo, no se usa para drill).
+    wide.insert(0, "holding_fin", df_use["holding_fin"].values)
+    wide.insert(0, "holding_inicio", df_use["holding_inicio"].values)
     wide.insert(0, "mes_promesa_sellers", df_use["mes_promesa_sellers"].values)
     wide.insert(0, "mes_promesa_buyers", df_use["mes_promesa_buyers"].values)
     wide.insert(0, "mes_deed_venta", df_use["mes_deed_venta"].values)
@@ -915,6 +994,134 @@ def _commercial_sint_nid_count_sellers(df_prepared: pd.DataFrame) -> pd.DataFram
                       total[["region", "mes", "key", "valor"]]], ignore_index=True)
 
 
+def _holding_sint_expand_nid_month(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Explota cada NID en 1 fila por mes calendario entre `holding_inicio`
+    (deed compra) y `holding_fin` (deed venta o fecha_reversion o hoy).
+
+    Devuelve un DataFrame con columnas:
+      nid, region, mes (YYYY-MM string), dias_en_mes, dias_totales,
+      hol_admin_total, hol_limpieza_total, hol_utilities_total, hol_predial_total.
+
+    Vectorizado con `pd.period_range` + `explode`. Sin loops en Python.
+
+    Excluye:
+    - NIDs con `holding_inicio` NaT (sin deed compra).
+    - NIDs con `holding_fin < holding_inicio` (data corrupta — log warning).
+    """
+    d = df_prepared.copy()
+    ini = pd.to_datetime(d["holding_inicio"], errors="coerce").dt.normalize()
+    fin = pd.to_datetime(d["holding_fin"], errors="coerce").dt.normalize()
+
+    valid = ini.notna() & fin.notna() & (fin >= ini)
+    n_invalid_order = int((ini.notna() & fin.notna() & (fin < ini)).sum())
+    if n_invalid_order:
+        log.warning(
+            "Holding Sint: %d NIDs con holding_fin < holding_inicio (data corrupta) → excluidos.",
+            n_invalid_order,
+        )
+    d = d.loc[valid].copy()
+    ini = ini.loc[valid]
+    fin = fin.loc[valid]
+
+    dias_totales = (fin - ini).dt.days + 1  # +1 para incluir ambos extremos
+
+    # Montos totales por NID (raw, positivos). Convertimos a números y NaN→0.
+    for src, dst in [
+        ("holding_administracion_accounting", "hol_admin_total"),
+        ("holding_limpieza_ACCOUNTING", "hol_limpieza_total"),
+        ("holding_servicios_publicos_accounting", "hol_utilities_total"),
+        ("holding_predial_accounting", "hol_predial_total"),
+    ]:
+        d[dst] = pd.to_numeric(d[src], errors="coerce").fillna(0.0) if src in d.columns else 0.0
+
+    d["_ini"] = ini
+    d["_fin"] = fin
+    d["_dias_totales"] = dias_totales
+
+    # Explode por mes usando period_range vectorizado
+    d["_periodos"] = [
+        pd.period_range(a, b, freq="M") for a, b in zip(ini, fin)
+    ]
+    exploded = d.explode("_periodos").rename(columns={"_periodos": "_p"})
+    exploded["_p_start"] = exploded["_p"].dt.to_timestamp()
+    exploded["_p_end"] = exploded["_p"].dt.to_timestamp(how="end").dt.normalize()
+
+    # Días del NID dentro de este mes = min(fin, mes_end) - max(ini, mes_start) + 1
+    left = exploded[["_p_start", "_ini"]].max(axis=1)
+    right = exploded[["_p_end", "_fin"]].min(axis=1)
+    exploded["dias_en_mes"] = (right - left).dt.days + 1
+
+    exploded["mes"] = exploded["_p"].astype(str)
+    exploded["region"] = exploded["region_norm"]
+
+    keep = [
+        "nid", "region", "mes", "dias_en_mes", "_dias_totales",
+        "hol_admin_total", "hol_limpieza_total", "hol_utilities_total", "hol_predial_total",
+    ]
+    out = exploded[keep].rename(columns={"_dias_totales": "dias_totales"}).reset_index(drop=True)
+    return out
+
+
+def _holding_sint_by_prorrateo(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Re-agrega las 5 keys de Holding Sintético por (region, mes) con prorrateo
+    diario del gasto `_accounting` total del NID: cada mes recibe una fracción
+    proporcional a los días del NID en holding dentro del mes.
+
+    Universo: NIDs con `date_deed_sellers` no NULL. Rango: deed compra → deed
+    venta / fecha_reversion / hoy (via `holding_inicio` y `holding_fin` ya
+    calculados en `prepare()`).
+
+    Devuelve long DF [region, mes, key, valor] con las 5 keys (4 subcuentas +
+    `holding` total). Signo cost (negativo). Incluye fila `region='Total'`.
+    """
+    per_nid_mes = _holding_sint_expand_nid_month(df_prepared)
+    if per_nid_mes.empty:
+        return pd.DataFrame(columns=["region", "mes", "key", "valor"])
+
+    frac = per_nid_mes["dias_en_mes"] / per_nid_mes["dias_totales"].replace(0, pd.NA)
+    frac = frac.fillna(0.0)
+
+    per_nid_mes["hol_admin"] = -per_nid_mes["hol_admin_total"] * frac
+    per_nid_mes["hol_limpieza"] = -per_nid_mes["hol_limpieza_total"] * frac
+    per_nid_mes["hol_utilities"] = -per_nid_mes["hol_utilities_total"] * frac
+    per_nid_mes["hol_predial"] = -per_nid_mes["hol_predial_total"] * frac
+    per_nid_mes["holding"] = (
+        per_nid_mes["hol_admin"] + per_nid_mes["hol_limpieza"]
+        + per_nid_mes["hol_utilities"] + per_nid_mes["hol_predial"]
+    )
+
+    cols_val = list(HOLDING_SINT_KEYS)
+    by_region = per_nid_mes.groupby(["region", "mes"], as_index=False)[cols_val].sum()
+    total = per_nid_mes.groupby("mes", as_index=False)[cols_val].sum()
+    total["region"] = "Total"
+
+    wide = pd.concat([by_region, total], ignore_index=True)
+    return wide.melt(id_vars=["region", "mes"], var_name="key", value_name="valor")
+
+
+def _holding_sint_nid_count(df_prepared: pd.DataFrame) -> pd.DataFrame:
+    """Cuenta NIDs vivos en holding por (region, mes). Cada NID cuenta 1 en
+    cada mes que estuvo en holding (universo = NIDs con deed compra).
+
+    Se usa para el tooltip "# NIDs en holding este mes: N" en el drill/hover
+    de las filas Holding Sintético. También sirve para reconciliar con
+    `inv_financiero_backlog=1` de Ivy.
+    """
+    per_nid_mes = _holding_sint_expand_nid_month(df_prepared)
+    if per_nid_mes.empty:
+        return pd.DataFrame(columns=["region", "mes", "key", "valor"])
+
+    by_region = per_nid_mes.groupby(["region", "mes"])["nid"].nunique().reset_index(name="valor")
+    by_region["key"] = "holding_nid_count"
+
+    total = per_nid_mes.groupby("mes")["nid"].nunique().reset_index(name="valor")
+    total["region"] = "Total"
+    total["key"] = "holding_nid_count"
+
+    return pd.concat([by_region[["region", "mes", "key", "valor"]],
+                      total[["region", "mes", "key", "valor"]]], ignore_index=True)
+
+
 def aggregate(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame:
     """Devuelve DataFrame long: columnas [region, mes, key, valor].
 
@@ -984,6 +1191,14 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         all_long = all_long.loc[~mask_stale_tcb].copy()
         all_long = pd.concat([all_long, tcb_long], ignore_index=True)
 
+        # Sobrescribir Holding Sintético — 5 keys (4 subcuentas + total).
+        # Prorrateo diario del `_accounting` entre deed_sellers y
+        # (deed_buyers | fecha_reversion | hoy). Universo = NIDs con deed compra.
+        hol_long = _holding_sint_by_prorrateo(df_prepared)
+        mask_stale_hol = all_long["key"].isin(HOLDING_SINT_KEYS)
+        all_long = all_long.loc[~mask_stale_hol].copy()
+        all_long = pd.concat([all_long, hol_long], ignore_index=True)
+
         # Sobrescribir Commercial Sintético — 4 subcuentas + 3 rollups.
         # Buyers (com_ext_buyers + com_int_buyers) por `date_psa_buyers` y
         # sellers (com_ext_sellers + com_int_sellers) por
@@ -1025,6 +1240,10 @@ def aggregate_all_regions(df_prepared: pd.DataFrame, vista: str) -> pd.DataFrame
         nid_count_cb = _commercial_sint_nid_count_buyers(df_prepared)
         nid_count_cs = _commercial_sint_nid_count_sellers(df_prepared)
         all_long = pd.concat([all_long, nid_count_cb, nid_count_cs], ignore_index=True)
+        # 8) count NIDs en holding por mes (para tooltip + reconciliación
+        #    contra inv_financiero_backlog=1 del inventario financiero MX).
+        nid_count_hol = _holding_sint_nid_count(df_prepared)
+        all_long = pd.concat([all_long, nid_count_hol], ignore_index=True)
 
     return all_long
 
